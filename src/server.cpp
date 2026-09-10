@@ -973,14 +973,7 @@ const std::vector<ItemDef>& g_catalogSnapshot()
 std::string GameServer::roleColor(const Session& session) const
 {
     const Role* role = m_roles.getRole(session.roleId);
-    int rank = role != nullptr ? role->rank : 0;
-    if (rank >= 100)
-        return "`4"; // Owner: red
-    if (rank >= 80)
-        return "`#"; // Admin: navy
-    if (rank >= 50)
-        return "`^"; // Moderator: cyan
-    return "`w";
+    return role != nullptr && !role->color.empty() ? role->color : "`w";
 }
 
 void GameServer::broadcastChat(Session& session, const std::string& text)
@@ -1138,12 +1131,12 @@ void GameServer::sendSpawn(ENetPeer* peer, const Session& subject, bool local)
     int tileX = static_cast<int>(subject.posX / 32.0f);
     int tileY = static_cast<int>(subject.posY / 32.0f);
 
-    std::string nameColor = "`w";
+    std::string nameColor = roleColor(subject);
     if (!subject.worldName.empty())
     {
         const World& subjectWorld = m_worlds.getOrCreate(subject.worldName);
         if (subjectWorld.ownerId == static_cast<int>(subject.playerId))
-            nameColor = "`2";
+            nameColor = "`2"; // world owner renders green
     }
     std::string text = "spawn|avatar\nnetID|" + std::to_string(subject.netId) + "\nuserID|" +
                        std::to_string(subject.playerId) + "\ncolrect|0|0|20|30\nposXY|" +
@@ -1178,9 +1171,32 @@ void GameServer::sendSetClothing(const Session& subject, bool toWholeWorld)
         VariantValue::makeVec3(0, 0, 0),   // hair/shirt/legs
         VariantValue::makeVec3(0, 0, 0),   // feet/face/hand
         VariantValue::makeVec3(0, 0, 0),   // back/head/charm
-        VariantValue::makeUInt(subject.skinColor),
+        VariantValue::makeUInt(subject.ghost ? 0xFFFFFF74 : subject.skinColor),
         VariantValue::makeVec3(0, 0, 0),   // ances
     };
+    // Character state tank packet (0x14) accompanies OnSetClothing in the
+    // reference implementation — required for the avatar to render.
+    TankHeader state;
+    state.type = static_cast<int32_t>(0x14u | ((0x808000u) << 8));
+    state.netId = subject.netId;
+    state.count = 125.0f;
+    state.id = 0; // pstate flags (ghost/double-jump/duct-tape)
+    state.posX = 1200.0f;
+    state.posY = 200.0f;
+    state.velX = 250.0f;
+    state.velY = 1000.0f;
+    state.punchX = 0;
+    state.punchY = 0;
+    std::vector<uint8_t> stateData = encodeTankHeader(state);
+
+    auto sendTo = [&](ENetPeer* peer) {
+        sendVariant(peer, args, subject.netId);
+        ENetPacket* packet =
+            enet_packet_create(stateData.data(), stateData.size(), ENET_PACKET_FLAG_RELIABLE);
+        if (enet_peer_send(peer, 0, packet) != 0)
+            enet_packet_destroy(packet);
+    };
+
     if (toWholeWorld && !subject.worldName.empty())
     {
         const World& world = m_worlds.getOrCreate(subject.worldName);
@@ -1188,12 +1204,12 @@ void GameServer::sendSetClothing(const Session& subject, bool toWholeWorld)
         {
             if (candidate.worldName != world.name)
                 continue;
-            sendVariant(peer, args, candidate.peer == subject.peer ? subject.netId : subject.netId);
+            sendTo(peer);
         }
     }
     else
     {
-        sendVariant(subject.peer, args, subject.netId);
+        sendTo(subject.peer);
     }
 }
 
@@ -2100,17 +2116,22 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
             return;
         }
 
-        // Punch reach: reject editing tiles far away from the avatar.
-        int playerTileX = static_cast<int>(session.posX / 32.0f);
-        int playerTileY = static_cast<int>(session.posY / 32.0f);
-        if (std::abs(punchX - playerTileX) > 4 || std::abs(punchY - playerTileY) > 4)
-        {
-            sendConsoleMessage(session.peer, "Too far away.");
-            return;
-        }
-
         const Role* role = m_roles.getRole(session.roleId);
         bool staff = role != nullptr && role->hasPermission("world.bypass_lock");
+
+        // Punch reach: 3 tiles for regular players — staff (Owner/Admin)
+        // has unlimited reach.
+        if (!staff)
+        {
+            int playerTileX = static_cast<int>(session.posX / 32.0f);
+            int playerTileY = static_cast<int>(session.posY / 32.0f);
+            if (std::abs(punchX - playerTileX) > 3 || std::abs(punchY - playerTileY) > 3)
+            {
+                sendConsoleMessage(session.peer, "Too far away.");
+                return;
+            }
+        }
+
         if (world.ownerId != 0 && session.playerId != static_cast<uint32_t>(world.ownerId) && !staff)
         {
             sendConsoleMessage(session.peer, "This world is locked.");
@@ -2121,11 +2142,17 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
 
         if (heldId == kFistItemId)
         {
-            // Punching the main door respawns the player at it (real GT
-            // behaviour).
+            // Punching the main door silently teleports the player back to
+            // the spawn point (no death animation).
             if (tile.fg == kMainDoorItemId)
             {
-                respawnPlayer(session);
+                float sx = static_cast<float>(world.spawnTileX * 32);
+                float sy = static_cast<float>(world.spawnTileY * 32);
+                session.posX = sx;
+                session.posY = sy;
+                sendVariant(session.peer,
+                            {VariantValue::makeString("OnSetPos"), VariantValue::makeVec2(sx, sy)},
+                            session.netId);
                 return;
             }
 

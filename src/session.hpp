@@ -32,7 +32,7 @@ struct Session
     int gems{0};
     int hp{10}; // Lava touches drain this; at 0 the player respawns.
     int slotSize{16}; // Backpack capacity (upgradable in the store).
-    uint32_t skinColor{0}; // RGBA skin tint applied through OnSetClothing.
+    uint32_t skinColor{2527912447}; // GT default skin (0 = invisible!).
     std::vector<std::pair<int, int>> inventory; // (item_id, count)
 };
 

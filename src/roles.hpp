@@ -14,6 +14,7 @@ struct Role
     int id{0};
     std::string name;
     int rank{0};
+    std::string color{"`w"}; // GT color code for the display name
     std::unordered_set<std::string> permissions;
 
     bool hasPermission(const std::string& permission) const

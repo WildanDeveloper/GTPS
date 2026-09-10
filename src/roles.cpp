@@ -63,7 +63,7 @@ bool RoleManager::load(const std::string& path)
         }
 
         auto fields = split(line, '|');
-        if (fields.size() != 4)
+        if (fields.size() != 5)
         {
             logWarn("Skipping malformed role on line " + std::to_string(lineNumber));
             continue;
@@ -81,7 +81,9 @@ bool RoleManager::load(const std::string& path)
             continue;
         }
         role.name = trimCopy(fields[1]);
-        for (const auto& perm : split(fields[3], ','))
+        std::string color = trimCopy(fields[3]);
+        role.color = color.empty() ? "`w" : color;
+        for (const auto& perm : split(fields[4], ','))
         {
             std::string cleaned = trimCopy(perm);
             if (!cleaned.empty())
