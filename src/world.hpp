@@ -23,6 +23,24 @@ constexpr int16_t kGrassItemId = 16;
 constexpr int16_t kGemsItemId = 112;
 constexpr int16_t kWorldLockItemId = 242;
 
+// A placed door (id 12) with optional destination ("WORLD" or "WORLD:ID").
+struct WorldDoor
+{
+    int x{0};
+    int y{0};
+    std::string label;
+    std::string dest; // empty = goes back to spawn
+    std::string id; // optional target id for other doors
+};
+
+// A placed sign (id 20) with editable text.
+struct WorldSign
+{
+    int x{0};
+    int y{0};
+    std::string text;
+};
+
 // A dropped item lying in the world.
 struct WorldObject
 {
@@ -51,9 +69,12 @@ struct World
     int visitorCount{0};
     int nextNetId{0};
     bool dirty{false};
+    bool isPublic{false}; // world lock: anyone may build
 
-    // Dropped objects + in-memory punch damage (damage is not persisted).
+    // Dropped objects, placed doors/signs + in-memory punch damage.
     std::vector<WorldObject> objects;
+    std::vector<WorldDoor> doors;
+    std::vector<WorldSign> signs;
     uint32_t lastObjectId{0};
     std::unordered_map<int, std::pair<int, long long>> damage; // tile idx -> (hits, last hit ms)
 
@@ -92,8 +113,17 @@ private:
 // Serializes a world into the client map-data layout.
 std::vector<uint8_t> serializeWorld(const World& world);
 
-// Dropped-object persistence (bounds-checked on load).
+// Dropped-object persistence (bounds-checked on load). parseObjects reports
+// how many bytes it consumed so the extras section can follow it.
 std::vector<uint8_t> serializeObjects(const World& world);
-void parseObjects(World& world, const std::vector<uint8_t>& blob);
+void parseObjects(World& world, const std::vector<uint8_t>& blob, std::size_t& consumed);
+
+// Doors + signs + world flags (stored alongside the objects blob).
+std::vector<uint8_t> serializeWorldExtras(const World& world);
+void parseWorldExtras(World& world, const std::vector<uint8_t>& blob, std::size_t offset);
+
+// Appends the per-tile extra data (door destination/label, sign text) the
+// client expects after the 8-byte tile core in map data and tile updates.
+void appendTileExtras(const World& world, int x, int y, std::vector<uint8_t>& out);
 
 } // namespace WildanDev

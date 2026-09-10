@@ -3,6 +3,8 @@
 #include "logger.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <ctime>
 
 namespace WildanDev
 {
@@ -12,9 +14,10 @@ void GameServer::registerBuiltinCommands()
     registerCommand("help", {"command.basic", "/help",
                              [this](Session& session, const std::vector<std::string>& args) {
                                  (void)args;
-                                 sendConsoleMessage(session.peer, "Commands: /help /who /warp <world> "
-                                                                  "/give <name> <id> <n> /sb <msg> /ghost /kick "
-                                                                  "/mute /ban /mod /unmod");
+                                 sendConsoleMessage(session.peer, "Commands: /help /who /me /news /time "
+                                                                  "/warp /store /skin /weather /sb <msg> "
+                                                                  "/ghost /kick /mute /ban + emotes (/love, "
+                                                                  "/troll...)");
                              }});
 
     registerCommand("who", {"command.basic", "/who",
@@ -317,14 +320,186 @@ void GameServer::registerBuiltinCommands()
                                        message.push_back(' ');
                                    message += word;
                                }
-                               std::string full = "[SB] <" + session.growId + "> " + message;
+                               std::string world = session.worldName.empty() ? "?" : session.worldName;
+                               std::string full = "CP:0_PL:0_OID:_CT:[SB]_ `5** from (" + roleColor(session) +
+                                                  session.growId + "``5) in [``$" + world + "``5] ** : ``$" +
+                                                  message + "``";
                                for (auto& [peer, candidate] : m_sessions)
                                {
                                    if (candidate.authenticated)
                                        sendConsoleMessage(peer, full);
                                }
-                               logInfo(full);
+                               logInfo("[SB] " + session.growId + " (" + world + "): " + message);
                            }});
+
+    registerCommand("me", {"command.basic", "/me <text>",
+                           [this](Session& session, const std::vector<std::string>& args) {
+                               std::string message;
+                               for (const auto& word : args)
+                               {
+                                   if (!message.empty())
+                                       message.push_back(' ');
+                                   message += word;
+                               }
+                               if (message.empty())
+                               {
+                                   sendConsoleMessage(session.peer, "Usage: /me <text>");
+                                   return;
+                               }
+                               if (session.muted)
+                               {
+                                   sendConsoleMessage(session.peer, "You are muted.");
+                                   return;
+                               }
+                               if (session.worldName.empty())
+                                   return;
+                               World& world = m_worlds.getOrCreate(session.worldName);
+                               std::string color = roleColor(session);
+                               std::string bubble = "CP:0_PL:0_OID:_player_chat= `6<" + color +
+                                                    session.growId + "``6>`` " + message;
+                               std::string console = "CP:0_PL:0_OID:_CT:[W]_ `6<" + color + session.growId +
+                                                     "``6>`` " + message;
+                               for (auto& [peer, candidate] : m_sessions)
+                               {
+                                   if (candidate.worldName != world.name)
+                                       continue;
+                                   sendVariant(peer, {VariantValue::makeString("OnTalkBubble"),
+                                                      VariantValue::makeInt(session.netId),
+                                                      VariantValue::makeString(bubble),
+                                                      VariantValue::makeUInt(0)});
+                                   sendConsoleMessage(peer, console);
+                               }
+                           }});
+
+    registerCommand("news", {"command.basic", "/news",
+                             [this](Session& session, const std::vector<std::string>& args) {
+                                 (void)args;
+                                 if (session.authenticated)
+                                     handleEnterGame(session);
+                             }});
+
+    registerCommand("time", {"command.basic", "/time",
+                             [this](Session& session, const std::vector<std::string>& args) {
+                                 (void)args;
+                                 std::time_t t = std::time(nullptr);
+                                 char buf[32] = {};
+                                 std::strftime(buf, sizeof(buf), "%H:%M", std::localtime(&t));
+                                 static const char* months[] = {"January",  "February", "March",
+                                                                "April",    "May",      "June",
+                                                                "July",     "August",   "September",
+                                                                "October",  "November", "December"};
+                                 std::tm* tm = std::localtime(&t);
+                                 sendConsoleMessage(session.peer, std::string("`2Growtopia Time: `w") +
+                                                                      months[tm->tm_mon] + " " +
+                                                                      std::to_string(tm->tm_mday) + ", " +
+                                                                      buf + "`` (server time)");
+                             }});
+
+    registerCommand("weather", {"command.weather", "/weather <0-80>",
+                                [this](Session& session, const std::vector<std::string>& args) {
+                                    if (args.empty())
+                                    {
+                                        sendConsoleMessage(session.peer, "Usage: /weather <0=sunny, 2=night, "
+                                                                         "11=snowy, 18=party ...>");
+                                        return;
+                                    }
+                                    int id = 0;
+                                    if (auto [ptr, ec] = std::from_chars(args[0].data(),
+                                                                         args[0].data() + args[0].size(), id);
+                                        ec != std::errc() || id < 0 || id > 80)
+                                    {
+                                        sendConsoleMessage(session.peer, "Weather id must be 0-80.");
+                                        return;
+                                    }
+                                    if (session.worldName.empty())
+                                        return;
+                                    World& world = m_worlds.getOrCreate(session.worldName);
+                                    for (auto& [peer, candidate] : m_sessions)
+                                    {
+                                        if (candidate.worldName != world.name)
+                                            continue;
+                                        sendVariant(peer, {VariantValue::makeString("OnSetCurrentWeather"),
+                                                           VariantValue::makeInt(id)});
+                                    }
+                                    logInfo(session.growId + " set weather " + std::to_string(id) + " in " +
+                                            world.name);
+                                }});
+
+    registerCommand("skin", {"command.basic", "/skin <rgba>",
+                             [this](Session& session, const std::vector<std::string>& args) {
+                                 if (args.empty())
+                                 {
+                                     sendConsoleMessage(session.peer,
+                                                        "Usage: /skin <rgba decimal, e.g. 4294967295=white>");
+                                     return;
+                                 }
+                                 unsigned long value = 0;
+                                 if (auto [ptr, ec] = std::from_chars(args[0].data(),
+                                                                      args[0].data() + args[0].size(), value);
+                                     ec != std::errc() || value > 0xFFFFFFFFul)
+                                 {
+                                     sendConsoleMessage(session.peer, "Invalid color value.");
+                                     return;
+                                 }
+                                 session.skinColor = static_cast<uint32_t>(value);
+                                 sendSetClothing(session, true);
+                             }});
+
+    registerCommand("who", {"command.basic", "/who",
+                            [this](Session& session, const std::vector<std::string>& args) {
+                                (void)args;
+                                if (session.worldName.empty())
+                                {
+                                    sendConsoleMessage(session.peer, "Join a world first.");
+                                    return;
+                                }
+                                World& world = m_worlds.getOrCreate(session.worldName);
+                                std::string names;
+                                for (auto& [peer, candidate] : m_sessions)
+                                {
+                                    if (candidate.worldName != world.name)
+                                        continue;
+                                    if (candidate.netId != session.netId)
+                                        sendVariant(session.peer,
+                                                    {VariantValue::makeString("OnTalkBubble"),
+                                                     VariantValue::makeInt(candidate.netId),
+                                                     VariantValue::makeString(candidate.growId),
+                                                     VariantValue::makeUInt(1)});
+                                    if (!names.empty())
+                                        names += ", ";
+                                    names += candidate.growId;
+                                }
+                                sendConsoleMessage(session.peer, "`wWho's in `$" + world.name +
+                                                                     "``: " + names + "``");
+                            }});
+
+    registerCommand("store", {"command.basic", "/store",
+                              [this](Session& session, const std::vector<std::string>& args) {
+                                  (void)args;
+                                  if (session.authenticated)
+                                      sendStoreDialog(session);
+                              }});
+
+    // Growmoji emotes: /wl, /love, /troll, ... show the glyph in a bubble.
+    for (const auto& [name, glyph] : kEmoteGlyphs)
+    {
+        registerCommand(name, {"command.basic", "/" + name,
+                               [this, glyph](Session& session, const std::vector<std::string>& args) {
+                                   (void)args;
+                                   if (session.muted || session.worldName.empty())
+                                       return;
+                                   World& world = m_worlds.getOrCreate(session.worldName);
+                                   for (auto& [peer, candidate] : m_sessions)
+                                   {
+                                       if (candidate.worldName != world.name)
+                                           continue;
+                                       sendVariant(peer, {VariantValue::makeString("OnTalkBubble"),
+                                                          VariantValue::makeInt(session.netId),
+                                                          VariantValue::makeString(glyph),
+                                                          VariantValue::makeUInt(0)});
+                                   }
+                               }});
+    }
 }
 
 } // namespace WildanDev

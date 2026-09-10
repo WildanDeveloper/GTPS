@@ -20,6 +20,24 @@
 namespace WildanDev
 {
 
+// Growmoji unlocks: name | unicode glyph | unlocked(1). Matches the client's
+// OnEmoticonDataChanged format "(name)|glyph|1&".
+static const char* kEmoticonData =
+    "(wl)|\u0101|1&(yes)|\u0102|1&(no)|\u0103|1&(love)|\u0104|1&(oops)|\u0105|1&(shy)|\u0106|1&"
+    "(wink)|\u0107|1&(tongue)|\u0108|1&(agree)|\u0109|1&(sleep)|\u010a|1&(punch)|\u010b|1&"
+    "(music)|\u010c|1&(build)|\u010d|1&(megaphone)|\u010e|1&(sigh)|\u010f|1&(mad)|\u0110|1&"
+    "(wow)|\u0111|1&(dance)|\u0112|1&(see-no-evil)|\u0113|1&(bheart)|\u0114|1&(heart)|\u0115|1&"
+    "(grow)|\u0116|1&(gems)|\u0117|1&(kiss)|\u0118|1&(gtoken)|\u0119|1&(lol)|\u011a|1&"
+    "(smile)|\u011b|1&(cool)|\u011c|1&(cry)|\u011d|1&(vend)|\u011e|1&(bunny)|\u011f|1&"
+    "(cactus)|\u0120|1&(pine)|\u0121|1&(peace)|\u0122|1&(terror)|\u0123|1&(troll)|\u0124|1&"
+    "(evil)|\u0125|1&(fireworks)|\u0126|1&(football)|\u0127|1&(alien)|\u0128|1&(party)|\u0129|1&"
+    "(pizza)|\u012a|1&(clap)|\u012b|1&(song)|\u012c|1&(ghost)|\u012d|1&(nuke)|\u012e|1&"
+    "(halo)|\u012f|1&(turkey)|\u0130|1&(gift)|\u0131|1&(cake)|\u0132|1&(heartarrow)|\u0133|1&"
+    "(lucky)|\u0134|1&(shamrock)|\u0135|1&(grin)|\u0136|1&(ill)|\u0137|1&(eyes)|\u0138|1&"
+    "(weary)|\u0139|1&(moyai)|\u013a|1&(plead)|\u013b|1&";
+
+// /<emote> command name -> glyph shown in the bubble (see server.hpp).
+
 namespace
 {
 
@@ -560,6 +578,89 @@ void GameServer::handleTextPacket(Session& session, const TextPacket& packet)
             if (session.authenticated)
                 respawnPlayer(session);
         }
+        else if (action == "dialog_return")
+        {
+            if (session.authenticated)
+                handleDialogReturn(session, packet);
+        }
+        else if (action == "drop" || action == "trash")
+        {
+            if (!session.authenticated || session.worldName.empty())
+                return;
+            std::string idText = lineValue(packet.lines, "itemID");
+            int itemId = 0;
+            if (auto [ptr, ec] = std::from_chars(idText.data(), idText.data() + idText.size(), itemId);
+                ec != std::errc() || itemId <= 0)
+                return;
+            const ItemDef* item = findItemById(itemId);
+            if (item == nullptr)
+                return;
+            bool owned = false;
+            int ownedCount = 0;
+            for (const auto& slot : session.inventory)
+            {
+                if (slot.first == itemId)
+                {
+                    owned = true;
+                    ownedCount = slot.second;
+                    break;
+                }
+            }
+            if (!owned)
+                return;
+            if (action == "drop" && item->type == ItemType::Lock)
+            {
+                sendVariant(session.peer, {VariantValue::makeString("OnTextOverlay"),
+                                           VariantValue::makeString("You can't drop that.")});
+                return;
+            }
+            if (action == "trash" && (item->type == ItemType::Fist || item->type == ItemType::Wrench))
+            {
+                sendVariant(session.peer, {VariantValue::makeString("OnTextOverlay"),
+                                           VariantValue::makeString("You'd be sorry if you lost that!")});
+                return;
+            }
+            std::string dialog =
+                action == "drop"
+                    ? "set_default_color|`o\n"
+                      "add_label_with_icon|big|`wDrop " + item->name + "``|left|" + std::to_string(itemId) +
+                      "|\n"
+                      "add_textbox|How many to drop? (you have " + std::to_string(ownedCount) + ")|left|\n"
+                      "add_text_input|count||1|5|\n"
+                      "embed_data|itemID|" + std::to_string(itemId) + "|\n"
+                      "end_dialog|drop_item|Cancel|Drop|"
+                    : "set_default_color|`o\n"
+                      "add_label_with_icon|big|`4Recycle`` `w" + item->name + "``|left|" +
+                      std::to_string(itemId) + "|\n"
+                      "add_textbox|How many to `4destroy``? (you have " + std::to_string(ownedCount) +
+                      ")|left|\n"
+                      "add_text_input|count||0|5|\n"
+                      "embed_data|itemID|" + std::to_string(itemId) + "|\n"
+                      "end_dialog|trash_item|Cancel|Recycle|";
+            sendVariant(session.peer, {VariantValue::makeString("OnDialogRequest"), VariantValue::makeString(dialog)});
+        }
+        else if (action == "store")
+        {
+            if (session.authenticated)
+                sendStoreDialog(session);
+        }
+        else if (action == "storenavigate")
+        {
+            if (!session.authenticated)
+                return;
+            purchaseStoreItem(session, lineValue(packet.lines, "item"));
+        }
+        else if (action == "wrench")
+        {
+            // Wrenching another player: action|wrench|netid|<id>
+            if (!session.authenticated || session.worldName.empty())
+                return;
+            std::string netIdText = lineValue(packet.lines, "netid");
+            int netId = 0;
+            if (auto [ptr, ec] = std::from_chars(netIdText.data(), netIdText.data() + netIdText.size(), netId);
+                ec == std::errc() && netId > 0)
+                sendWrenchPlayerDialog(session, netId);
+        }
         else if (action == "refresh_item_data")
         {
             if (session.authenticated)
@@ -841,6 +942,19 @@ void GameServer::sendInventoryState(Session& session)
         enet_packet_destroy(packet);
 }
 
+std::string GameServer::roleColor(const Session& session) const
+{
+    const Role* role = m_roles.getRole(session.roleId);
+    int rank = role != nullptr ? role->rank : 0;
+    if (rank >= 100)
+        return "`4"; // Owner: red
+    if (rank >= 80)
+        return "`#"; // Admin: navy
+    if (rank >= 50)
+        return "`^"; // Moderator: cyan
+    return "`w";
+}
+
 void GameServer::broadcastChat(Session& session, const std::string& text)
 {
     if (session.muted)
@@ -860,8 +974,9 @@ void GameServer::broadcastChat(Session& session, const std::string& text)
     }
 
     World& world = m_worlds.getOrCreate(session.worldName);
-    std::string bubble = "CP:0_PL:0_OID:_player_chat=" + text;
-    std::string console = "[W] <" + session.growId + "> " + text;
+    std::string color = roleColor(session);
+    std::string bubble = "CP:0_PL:0_OID:_player_chat= " + color + "<" + session.growId + "``" + color + ">`` " + text;
+    std::string console = "CP:0_PL:0_OID:_CT:[W]_ " + color + "<" + session.growId + "``" + color + ">`` " + text;
 
     for (auto& [peer, candidate] : m_sessions)
     {
@@ -960,6 +1075,12 @@ void GameServer::handleEnterGame(Session& session)
 
     sendVariant(session.peer, {VariantValue::makeString("OnSetFeatureEnableFlags"),
                                VariantValue::makeString("EA8DEAcGAgEOBQgKCQ0MEQQ=")});
+    // Unlock every growmoji and apply the client's country flag.
+    sendVariant(session.peer, {VariantValue::makeString("OnEmoticonDataChanged"),
+                               VariantValue::makeUInt(201560520),
+                               VariantValue::makeString(kEmoticonData)});
+    sendVariant(session.peer, {VariantValue::makeString("OnCountryState"),
+                               VariantValue::makeString(session.country)});
     logInfo(session.growId + " entered the game menu");
 }
 
@@ -1007,6 +1128,63 @@ void GameServer::broadcastToWorld(const World& world, const std::vector<uint8_t>
         if (peer == except || candidate.worldName != world.name)
             continue;
         ENetPacket* packet = enet_packet_create(raw.data(), raw.size(), ENET_PACKET_FLAG_RELIABLE);
+        if (enet_peer_send(peer, 0, packet) != 0)
+            enet_packet_destroy(packet);
+    }
+}
+
+void GameServer::sendSetClothing(const Session& subject, bool toWholeWorld)
+{
+    std::vector<VariantValue> args = {
+        VariantValue::makeString("OnSetClothing"),
+        VariantValue::makeVec3(0, 0, 0),   // hair/shirt/legs
+        VariantValue::makeVec3(0, 0, 0),   // feet/face/hand
+        VariantValue::makeVec3(0, 0, 0),   // back/head/charm
+        VariantValue::makeUInt(subject.skinColor),
+        VariantValue::makeVec3(0, 0, 0),   // ances
+    };
+    if (toWholeWorld && !subject.worldName.empty())
+    {
+        const World& world = m_worlds.getOrCreate(subject.worldName);
+        for (auto& [peer, candidate] : m_sessions)
+        {
+            if (candidate.worldName != world.name)
+                continue;
+            sendVariant(peer, args, candidate.peer == subject.peer ? subject.netId : subject.netId);
+        }
+    }
+    else
+    {
+        sendVariant(subject.peer, args, subject.netId);
+    }
+}
+
+void GameServer::sendTileUpdate(World& world, int x, int y)
+{
+    if (!world.inside(x, y))
+        return;
+    std::vector<uint8_t> body;
+    const Tile& tile = world.at(x, y);
+    appendInt32(body, tile.fg);
+    appendInt32(body, tile.bg);
+    for (uint8_t b : tile.state)
+        body.push_back(b);
+    appendTileExtras(world, x, y, body);
+
+    TankHeader header;
+    header.type = 0x05; // PACKET_TILE_UPDATE
+    header.state = 8; // Extended flag.
+    header.punchX = x;
+    header.punchY = y;
+    header.dataSize = static_cast<uint32_t>(body.size());
+
+    std::vector<uint8_t> data = encodeTankHeader(header);
+    data.insert(data.end(), body.begin(), body.end());
+    for (auto& [peer, candidate] : m_sessions)
+    {
+        if (candidate.worldName != world.name)
+            continue;
+        ENetPacket* packet = enet_packet_create(data.data(), data.size(), ENET_PACKET_FLAG_RELIABLE);
         if (enet_peer_send(peer, 0, packet) != 0)
             enet_packet_destroy(packet);
     }
@@ -1237,10 +1415,373 @@ bool GameServer::joinWorld(Session& session, const std::string& worldName)
                  VariantValue::makeVec2(static_cast<float>(world.spawnTileX * 32),
                                         static_cast<float>(world.spawnTileY * 32))},
                 session.netId);
+    sendSetClothing(session, true);
 
     sendConsoleMessage(session.peer, "World " + world.name + " entered.");
     logInfo(session.growId + " entered world " + world.name);
     return true;
+}
+
+void GameServer::sendWrenchTileDialog(Session& session, World& world, int x, int y)
+{
+    if (!world.inside(x, y))
+        return;
+    const Tile& tile = world.at(x, y);
+    const ItemDef* item = findItemById(tile.fg);
+    if (item == nullptr)
+        return;
+
+    std::string dialog;
+    if (item->type == ItemType::Door && tile.fg == 12)
+    {
+        std::string label, dest, id;
+        for (const WorldDoor& door : world.doors)
+        {
+            if (door.x == x && door.y == y)
+            {
+                label = door.label;
+                dest = door.dest;
+                id = door.id;
+                break;
+            }
+        }
+        dialog = "set_default_color|`o\n"
+                 "add_label_with_icon|big|`wEdit " + item->name + "``|left|" +
+                 std::to_string(tile.fg) + "|\n"
+                 "add_text_input|door_name|Label|" + label + "|100|\n"
+                 "add_popup_name|DoorEdit|\n"
+                 "add_text_input|door_target|Destination|" + dest + "|24|\n"
+                 "add_smalltext|Enter a Destination in this format: `2WORLDNAME``|left|\n"
+                 "add_text_input|door_id|ID|" + id + "|11|\n"
+                 "add_smalltext|Set a unique `2ID`` to target this door from another!|left|\n"
+                 "embed_data|tilex|" + std::to_string(x) + "\n"
+                 "embed_data|tiley|" + std::to_string(y) + "\n"
+                 "end_dialog|door_edit|Cancel|OK|";
+    }
+    else if (item->type == ItemType::Door && tile.fg == 20)
+    {
+        std::string text;
+        for (const WorldSign& sign : world.signs)
+        {
+            if (sign.x == x && sign.y == y)
+            {
+                text = sign.text;
+                break;
+            }
+        }
+        dialog = "set_default_color|`o\n"
+                 "add_popup_name|SignEdit|\n"
+                 "add_label_with_icon|big|`wEdit " + item->name + "``|left|" +
+                 std::to_string(tile.fg) + "|\n"
+                 "add_textbox|What would you like to write on this sign?``|left|\n"
+                 "add_text_input|sign_text|" + text + "|" + text + "|128|\n"
+                 "embed_data|tilex|" + std::to_string(x) + "\n"
+                 "embed_data|tiley|" + std::to_string(y) + "\n"
+                 "end_dialog|sign_edit|Cancel|OK|";
+    }
+    else if (item->type == ItemType::Lock && tile.fg == kWorldLockItemId)
+    {
+        if (world.ownerId != 0 && session.playerId != static_cast<uint32_t>(world.ownerId))
+        {
+            sendConsoleMessage(session.peer, "Only the world owner can edit the lock.");
+            return;
+        }
+        dialog = "set_default_color|`o\n"
+                 "add_label_with_icon|big|`wEdit " + item->name + "``|left|" +
+                 std::to_string(tile.fg) + "|\n"
+                 "add_popup_name|LockEdit|\n"
+                 "embed_data|tilex|" + std::to_string(x) + "\n"
+                 "embed_data|tiley|" + std::to_string(y) + "\n"
+                 "add_spacer|small|\n"
+                 "add_checkbox|checkbox_public|Allow anyone to build and break|" +
+                 (world.isPublic ? "1" : "0") + "|\n"
+                 "add_smalltext|When public, anyone may edit the world.\n"
+                 "end_dialog|lock_edit|Cancel|OK|";
+    }
+    else if (item->type == ItemType::MainDoor)
+    {
+        dialog = "set_default_color|`o\n"
+                 "add_label_with_icon|big|`w" + world.name + "``|left|6|\n"
+                 "add_spacer|small|\n"
+                 "add_textbox|`wOwner:`` " +
+                 (world.ownerId != 0 ? std::to_string(world.ownerId) : "unlocked") + "|left|\n"
+                 "add_textbox|`wVisitors:`` " + std::to_string(world.visitorCount) + "|left|\n"
+                 "add_quick_exit|\n"
+                 "end_dialog|popup|Cancel|OK|";
+    }
+    else
+    {
+        return;
+    }
+    sendVariant(session.peer, {VariantValue::makeString("OnDialogRequest"), VariantValue::makeString(dialog)});
+}
+
+void GameServer::sendWrenchPlayerDialog(Session& session, int netId)
+{
+    Session* target = nullptr;
+    for (auto& [peer, candidate] : m_sessions)
+    {
+        if (candidate.worldName == session.worldName && candidate.netId == netId)
+        {
+            target = &candidate;
+            break;
+        }
+    }
+    if (target == nullptr)
+        return;
+
+    const Role* role = m_roles.getRole(session.roleId);
+    bool staff = role != nullptr && role->rank >= 50;
+    std::string dialog = "set_default_color|`o\n"
+                         "add_label_with_icon|big|" + target->growId + "``|left|18|\n"
+                         "add_spacer|small|\n"
+                         "embed_data|targetNetID|" + std::to_string(netId) + "\n"
+                         "add_textbox|`wWorld:`` " + target->worldName + "|left|\n"
+                         "add_spacer|small|\n";
+    if (staff && target != &session)
+    {
+        dialog += "add_button|pull|`wPull to me``|noflags|0|0|\n"
+                  "add_button|kick|`4Kick from world``|noflags|0|0|\n"
+                  "add_button|ban|`4Ban from world``|noflags|0|0|\n";
+    }
+    dialog += "add_quick_exit|\n"
+              "end_dialog|popup|Cancel|OK|";
+    sendVariant(session.peer, {VariantValue::makeString("OnDialogRequest"), VariantValue::makeString(dialog)});
+}
+
+// Simple gem store: button id -> (display name, item id, count, cost).
+struct StoreEntry
+{
+    const char* button;
+    const char* name;
+    int itemId;
+    int count;
+    int cost;
+};
+static const StoreEntry kStore[] = {
+    {"world_lock", "World Lock", 242, 1, 2000},
+    {"small_lock", "Small Lock", 202, 1, 50},
+    {"dirt_pack", "20x Dirt", 2, 20, 100},
+    {"grass_pack", "20x Grass", 16, 20, 100},
+    {"sign_item", "Sign", 20, 1, 50},
+    {"door_item", "Door", 12, 1, 100},
+};
+
+void GameServer::sendStoreDialog(Session& session)
+{
+    std::string body = "set_description_text|Welcome to the `2WildanDev Store``! You have `5" +
+                       std::to_string(session.gems) + "`` Gems.\n";
+    for (const StoreEntry& entry : kStore)
+    {
+        body += "add_button|" + std::string(entry.button) + "|`w" + entry.name + "``|"
+                "interface/large/store_buttons/store_buttons.rttex|`2You Get:`` " +
+                std::to_string(entry.count) + "x " + entry.name +
+                ".<CR>`5Cost:`` " + std::to_string(entry.cost) + " Gems.|1|0|0||||-1|-1||-1|-1||1||||||0|0|CustomParams:|\n";
+    }
+    body += "add_quick_exit|\nend_dialog|store|Cancel|OK|";
+    sendVariant(session.peer, {VariantValue::makeString("OnStoreRequest"), VariantValue::makeString(body)});
+}
+
+bool GameServer::purchaseStoreItem(Session& session, const std::string& item)
+{
+    for (const StoreEntry& entry : kStore)
+    {
+        if (item != entry.button)
+            continue;
+        if (session.gems < entry.cost)
+        {
+            sendVariant(session.peer,
+                        {VariantValue::makeString("OnStorePurchaseResult"),
+                         VariantValue::makeString("You can't afford `0" + std::string(entry.name) +
+                                                  "``! You're `" + std::to_string(entry.cost - session.gems) +
+                                                  "`` Gems short.")});
+            return true;
+        }
+        session.gems -= entry.cost;
+        m_database.setGems(session.playerId, session.gems);
+        giveItem(session, entry.itemId, entry.count);
+        sendVariant(session.peer,
+                    {VariantValue::makeString("OnStorePurchaseResult"),
+                     VariantValue::makeString("You've purchased `0" + std::string(entry.name) +
+                                              "`` for `" + std::to_string(entry.cost) +
+                                              "`` Gems.\nYou have `" + std::to_string(session.gems) +
+                                              "`` Gems left.\n\n`5Received: ``0" + entry.name + "``")});
+        sendVariant(session.peer, {VariantValue::makeString("OnSetBux"), VariantValue::makeInt(session.gems),
+                                   VariantValue::makeInt(1), VariantValue::makeInt(1)});
+        logInfo(session.growId + " purchased " + entry.name + " for " + std::to_string(entry.cost) + " gems");
+        return true;
+    }
+    return false;
+}
+
+void GameServer::handleDialogReturn(Session& session, const TextPacket& packet)
+{
+    std::string dialogName = lineValue(packet.lines, "dialog_name");
+    std::string xText = lineValue(packet.lines, "tilex");
+    std::string yText = lineValue(packet.lines, "tiley");
+    int tileX = 0, tileY = 0;
+    auto toInt = [](const std::string& text, int& out) {
+        auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), out);
+        return ec == std::errc() && ptr == text.data() + text.size();
+    };
+
+    if (session.worldName.empty())
+        return;
+    World& world = m_worlds.getOrCreate(session.worldName);
+
+    if (dialogName == "door_edit" && toInt(xText, tileX) && toInt(yText, tileY) && world.inside(tileX, tileY))
+    {
+        std::string label = lineValue(packet.lines, "door_name");
+        std::string dest = lineValue(packet.lines, "door_target");
+        std::string id = lineValue(packet.lines, "door_id");
+        for (char& c : dest)
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        bool found = false;
+        for (WorldDoor& door : world.doors)
+        {
+            if (door.x == tileX && door.y == tileY)
+            {
+                door.label = label;
+                door.dest = dest;
+                door.id = id;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            world.doors.push_back({tileX, tileY, label, dest, id});
+        world.dirty = true;
+        sendTileUpdate(world, tileX, tileY);
+        sendConsoleMessage(session.peer, dest.empty() ? "Door updated." : "Door target set to `2" + dest + "``.");
+    }
+    else if (dialogName == "sign_edit" && toInt(xText, tileX) && toInt(yText, tileY) &&
+             world.inside(tileX, tileY))
+    {
+        std::string text = lineValue(packet.lines, "sign_text");
+        if (text.size() > 128)
+            text.resize(128);
+        bool found = false;
+        for (WorldSign& sign : world.signs)
+        {
+            if (sign.x == tileX && sign.y == tileY)
+            {
+                sign.text = text;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            world.signs.push_back({tileX, tileY, text});
+        world.dirty = true;
+        sendTileUpdate(world, tileX, tileY);
+    }
+    else if (dialogName == "lock_edit" && toInt(xText, tileX) && toInt(yText, tileY) &&
+             world.inside(tileX, tileY))
+    {
+        if (world.ownerId != 0 && session.playerId != static_cast<uint32_t>(world.ownerId))
+            return;
+        std::string pub = lineValue(packet.lines, "checkbox_public");
+        world.isPublic = pub == "1";
+        world.dirty = true;
+        sendTileUpdate(world, tileX, tileY);
+        sendConsoleMessage(session.peer,
+                           std::string("`2") + session.growId + "`` has set the `$World Lock`` to " +
+                               (world.isPublic ? "`2PUBLIC" : "`4PRIVATE"));
+    }
+    else if (dialogName == "drop_item")
+    {
+        int itemId = 0, count = 0;
+        if (!toInt(lineValue(packet.lines, "itemID"), itemId) ||
+            !toInt(lineValue(packet.lines, "count"), count))
+            return;
+        int owned = 0;
+        for (const auto& slot : session.inventory)
+        {
+            if (slot.first == itemId)
+            {
+                owned = slot.second;
+                break;
+            }
+        }
+        count = std::clamp(count, 0, owned);
+        if (count <= 0 || !takeItem(session, itemId, count))
+            return;
+        int tileX = static_cast<int>(session.posX / 32.0f);
+        int tileY = static_cast<int>(session.posY / 32.0f);
+        dropObject(world, itemId, count, tileX, tileY);
+        const ItemDef* item = findItemById(itemId);
+        sendConsoleMessage(session.peer, "Dropped `w" + std::to_string(count) + " " +
+                                             (item != nullptr ? item->name : std::to_string(itemId)) + "``.");
+    }
+    else if (dialogName == "trash_item")
+    {
+        int itemId = 0, count = 0;
+        if (!toInt(lineValue(packet.lines, "itemID"), itemId) ||
+            !toInt(lineValue(packet.lines, "count"), count))
+            return;
+        int owned = 0;
+        for (const auto& slot : session.inventory)
+        {
+            if (slot.first == itemId)
+            {
+                owned = slot.second;
+                break;
+            }
+        }
+        count = std::clamp(count, 0, owned);
+        if (count <= 0 || !takeItem(session, itemId, count))
+            return;
+        const ItemDef* item = findItemById(itemId);
+        sendConsoleMessage(session.peer, std::to_string(count) + " `w" +
+                                             (item != nullptr ? item->name : std::to_string(itemId)) +
+                                             "`` recycled, `w0`` gems earned.");
+    }
+    else if (dialogName == "popup")
+    {
+        // Wrench-player actions.
+        std::string button = lineValue(packet.lines, "buttonClicked");
+        std::string netIdText = lineValue(packet.lines, "targetNetID");
+        int netId = 0;
+        if (!toInt(netIdText, netId))
+            return;
+        Session* target = nullptr;
+        for (auto& [peer, candidate] : m_sessions)
+        {
+            if (candidate.worldName == session.worldName && candidate.netId == netId)
+            {
+                target = &candidate;
+                break;
+            }
+        }
+        if (target == nullptr || target == &session)
+            return;
+        const Role* role = m_roles.getRole(session.roleId);
+        bool staff = role != nullptr && role->rank >= 50;
+        if (!staff)
+            return;
+        if (button == "pull")
+        {
+            target->posX = session.posX + 32;
+            target->posY = session.posY;
+            sendVariant(target->peer, {VariantValue::makeString("OnSetPos"),
+                                       VariantValue::makeVec2(target->posX, target->posY)},
+                        target->netId);
+            sendConsoleMessage(target->peer, "You were pulled by " + session.growId + ".");
+            sendConsoleMessage(session.peer, "Pulled " + target->growId + ".");
+        }
+        else if (button == "kick")
+        {
+            logInfo(session.growId + " world-kicked " + target->growId);
+            sendConsoleMessage(target->peer, "You were kicked from the world by " + session.growId + ".");
+            leaveWorld(*target);
+        }
+        else if (button == "ban")
+        {
+            logInfo(session.growId + " world-banned " + target->growId);
+            sendConsoleMessage(target->peer, "You were banned from the world by " + session.growId + ".");
+            leaveWorld(*target);
+        }
+    }
 }
 
 void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::size_t length)
@@ -1357,12 +1898,68 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
 
     if (type == 0x07)
     {
-        // Tile activate: walking into the main door exits the world.
+        // Tile activate: walking into a door.
         int punchX = readInt32(data, 48);
         int punchY = readInt32(data, 52);
-        if (world.inside(punchX, punchY) && world.at(punchX, punchY).fg == kMainDoorItemId)
+        if (!world.inside(punchX, punchY))
+            return;
+        const Tile& tile = world.at(punchX, punchY);
+        if (tile.fg == kMainDoorItemId)
         {
             leaveWorld(session);
+            return;
+        }
+        if (tile.fg == 12) // Wooden door with a destination.
+        {
+            for (const WorldDoor& door : world.doors)
+            {
+                if (door.x != punchX || door.y != punchY)
+                    continue;
+                if (door.dest.empty())
+                    break; // no destination: snap back below
+                std::string target = door.dest;
+                std::string targetId;
+                auto colon = target.find(':');
+                if (colon != std::string::npos)
+                {
+                    targetId = target.substr(colon + 1);
+                    target = target.substr(0, colon);
+                }
+                leaveWorld(session);
+                if (!target.empty())
+                {
+                    joinWorld(session, target);
+                    if (!targetId.empty() && !session.worldName.empty())
+                    {
+                        // Teleport to the door with the matching id.
+                        World& dest = m_worlds.getOrCreate(session.worldName);
+                        for (const WorldDoor& d : dest.doors)
+                        {
+                            if (d.id == targetId)
+                            {
+                                session.posX = static_cast<float>(d.x * 32);
+                                session.posY = static_cast<float>(d.y * 32);
+                                sendVariant(session.peer,
+                                            {VariantValue::makeString("OnSetPos"),
+                                             VariantValue::makeVec2(session.posX, session.posY)},
+                                            session.netId);
+                                break;
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            // No destination: bounce back to the spawn point.
+            sendVariant(session.peer,
+                        {VariantValue::makeString("OnSetPos"),
+                         VariantValue::makeVec2(static_cast<float>(world.spawnTileX * 32),
+                                                static_cast<float>(world.spawnTileY * 32))},
+                        session.netId);
+            sendVariant(session.peer, {VariantValue::makeString("OnZoomCamera"),
+                                       VariantValue::makeFloat(10000.0f), VariantValue::makeUInt(1000)});
+            sendVariant(session.peer, {VariantValue::makeString("OnSetFreezeState"), VariantValue::makeInt(0)},
+                        session.netId);
         }
         return;
     }
@@ -1374,6 +1971,20 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
         int punchY = readInt32(data, 52);
         if (!world.inside(punchX, punchY))
             return;
+
+        // Wrench on a tile opens its edit dialog (doors, signs, locks).
+        if (heldId == 32)
+        {
+            const Role* role = m_roles.getRole(session.roleId);
+            bool staff = role != nullptr && role->hasPermission("world.bypass_lock");
+            if (world.ownerId != 0 && session.playerId != static_cast<uint32_t>(world.ownerId) && !staff)
+            {
+                sendConsoleMessage(session.peer, "This world is locked.");
+                return;
+            }
+            sendWrenchTileDialog(session, world, punchX, punchY);
+            return;
+        }
 
         // Punch reach: reject editing tiles far away from the avatar.
         int playerTileX = static_cast<int>(session.posX / 32.0f);

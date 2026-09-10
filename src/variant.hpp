@@ -14,6 +14,7 @@ enum class VariantType : uint8_t
     Float = 1,
     String = 2,
     Vec2 = 3,
+    Vec3 = 4,
     UInt32 = 5,
     Int32 = 9
 };
@@ -25,7 +26,8 @@ struct VariantValue
     uint32_t number{0}; // UInt32
     int32_t integer{0}; // Int32
     float decimal{0.0f}; // Float
-    float vec[2]{0.0f, 0.0f}; // Vec2
+    float vec[3]{0.0f, 0.0f, 0.0f}; // Vec2 (xy) / Vec3 (xyz)
+    uint8_t vecComponents{0};
 
     static VariantValue makeString(const std::string& value)
     {
@@ -65,6 +67,18 @@ struct VariantValue
         variant.type = VariantType::Vec2;
         variant.vec[0] = x;
         variant.vec[1] = y;
+        variant.vecComponents = 2;
+        return variant;
+    }
+
+    static VariantValue makeVec3(float x, float y, float z)
+    {
+        VariantValue variant;
+        variant.type = VariantType::Vec3;
+        variant.vec[0] = x;
+        variant.vec[1] = y;
+        variant.vec[2] = z;
+        variant.vecComponents = 3;
         return variant;
     }
 };
@@ -116,9 +130,9 @@ inline std::vector<uint8_t> encodeVariantList(const std::vector<VariantValue>& a
             body.push_back(static_cast<uint8_t>((arg.number >> 16) & 0xFF));
             body.push_back(static_cast<uint8_t>((arg.number >> 24) & 0xFF));
         }
-        else if (arg.type == VariantType::Vec2)
+        else if (arg.type == VariantType::Vec2 || arg.type == VariantType::Vec3)
         {
-            for (int i = 0; i < 2; ++i)
+            for (int i = 0; i < arg.vecComponents; ++i)
             {
                 uint32_t bits = 0;
                 __builtin_memcpy(&bits, &arg.vec[i], sizeof(bits));

@@ -68,7 +68,9 @@ World& WorldManager::getOrCreate(const std::string& name)
     {
         world.ownerId = ownerId;
         applyTiles(world, blob);
-        parseObjects(world, objectBlob);
+        std::size_t consumed = 0;
+        parseObjects(world, objectBlob, consumed);
+        parseWorldExtras(world, objectBlob, consumed);
         // Restore the spawn point from wherever the main door ended up.
         bool foundDoor = false;
         for (int y = 0; y < kWorldHeight && !foundDoor; ++y)
@@ -172,6 +174,8 @@ void WorldManager::saveDirty()
             blob.push_back(tile.state[3]);
         }
         std::vector<uint8_t> objects = serializeObjects(world);
+        std::vector<uint8_t> extras = serializeWorldExtras(world);
+        objects.insert(objects.end(), extras.begin(), extras.end());
         if (m_database.upsertWorld(name, world.ownerId, blob.data(), blob.size(), objects.data(), objects.size()))
             world.dirty = false;
     }
@@ -220,8 +224,9 @@ std::vector<uint8_t> serializeWorld(const World& world)
     appendInt16(out, 0);
     out.push_back(0);
 
-    for (const Tile& tile : world.tiles)
+    for (std::size_t i = 0; i < world.tiles.size(); ++i)
     {
+        const Tile& tile = world.tiles[i];
         appendInt16(out, tile.fg);
         appendInt16(out, tile.bg);
         out.push_back(tile.state[0]);
@@ -231,10 +236,9 @@ std::vector<uint8_t> serializeWorld(const World& world)
 
         // Door-type tiles append extra data after the 8-byte core: a flag
         // byte, then (flag&2) u16 destination length + destination, then
-        // (flag&1) u16 label length + label. An empty main door is just the
-        // zero flag byte.
-        if (tile.fg == 6) // Main door with no label or destination.
-            out.push_back(0x00);
+        // (flag&1) u16 label length + label. Tiles without extra data emit
+        // just the zero flag byte.
+        appendTileExtras(world, static_cast<int>(i % kWorldWidth), static_cast<int>(i / kWorldWidth), out);
     }
 
     appendInt32(out, 0);
@@ -260,7 +264,7 @@ std::vector<uint8_t> serializeObjects(const World& world)
     return out;
 }
 
-void parseObjects(World& world, const std::vector<uint8_t>& blob)
+void parseObjects(World& world, const std::vector<uint8_t>& blob, std::size_t& consumed)
 {
     world.objects.clear();
     std::size_t pos = 0;
@@ -271,9 +275,10 @@ void parseObjects(World& world, const std::vector<uint8_t>& blob)
         pos += 4;
         return true;
     };
+    consumed = 0;
     uint32_t count = 0;
     if (!readU32(count) || count > 100000)
-        return; // corrupt or empty blob
+        return; // corrupt, empty, or extras-only blob
     for (uint32_t i = 0; i < count; ++i)
     {
         uint32_t uid = 0, id = 0, count2 = 0, x = 0, y = 0;
@@ -288,6 +293,177 @@ void parseObjects(World& world, const std::vector<uint8_t>& blob)
         world.objects.push_back(object);
         if (uid > world.lastObjectId)
             world.lastObjectId = uid;
+    }
+    consumed = pos;
+}
+
+void appendTileExtras(const World& world, int x, int y, std::vector<uint8_t>& out)
+{
+    const Tile& tile = world.at(x, y);
+    bool isDoor = tile.fg == 6 || tile.fg == 12;
+    bool isSign = tile.fg == 20;
+    if (!isDoor && !isSign)
+        return;
+
+    if (isDoor)
+    {
+        std::string label, dest;
+        if (tile.fg == 6)
+        {
+            // Main door: label defaults to the world name, no destination.
+            label = world.name;
+        }
+        else
+        {
+            for (const WorldDoor& door : world.doors)
+            {
+                if (door.x == x && door.y == y)
+                {
+                    label = door.label;
+                    dest = door.dest;
+                    break;
+                }
+            }
+        }
+        uint8_t flags = 0;
+        if (!dest.empty())
+            flags |= 0x02;
+        if (!label.empty())
+            flags |= 0x01;
+        out.push_back(flags);
+        if (flags & 0x02)
+        {
+            out.push_back(static_cast<uint8_t>(dest.size() & 0xFF));
+            out.push_back(static_cast<uint8_t>((dest.size() >> 8) & 0xFF));
+            for (char c : dest)
+                out.push_back(static_cast<uint8_t>(c));
+        }
+        if (flags & 0x01)
+        {
+            out.push_back(static_cast<uint8_t>(label.size() & 0xFF));
+            out.push_back(static_cast<uint8_t>((label.size() >> 8) & 0xFF));
+            for (char c : label)
+                out.push_back(static_cast<uint8_t>(c));
+        }
+        return;
+    }
+
+    // Sign: u16 text length + text (no flag byte).
+    std::string text;
+    for (const WorldSign& sign : world.signs)
+    {
+        if (sign.x == x && sign.y == y)
+        {
+            text = sign.text;
+            break;
+        }
+    }
+    if (text.size() > 512)
+        text.resize(512);
+    out.push_back(static_cast<uint8_t>(text.size() & 0xFF));
+    out.push_back(static_cast<uint8_t>((text.size() >> 8) & 0xFF));
+    for (char c : text)
+        out.push_back(static_cast<uint8_t>(c));
+}
+
+// Extras blob layout (appended after the objects section):
+//   u32 marker 0x57443131, u8 isPublic, u32 doorCount,
+//   per door: u16 x, u16 y, u16 labelLen + bytes, u16 destLen + bytes,
+//             u16 idLen + bytes, u32 signCount,
+//   per sign: u16 x, u16 y, u16 textLen + bytes
+constexpr uint32_t kExtrasMarker = 0x57443131;
+
+std::vector<uint8_t> serializeWorldExtras(const World& world)
+{
+    std::vector<uint8_t> out;
+    appendInt32(out, static_cast<int32_t>(kExtrasMarker));
+    out.push_back(world.isPublic ? 1 : 0);
+    appendInt32(out, static_cast<int32_t>(world.doors.size()));
+    auto appendString = [&out](const std::string& text) {
+        appendInt16(out, static_cast<int16_t>(std::min<std::size_t>(text.size(), 512)));
+        for (std::size_t i = 0; i < text.size() && i < 512; ++i)
+            out.push_back(static_cast<uint8_t>(text[i]));
+    };
+    for (const WorldDoor& door : world.doors)
+    {
+        appendInt16(out, static_cast<int16_t>(door.x));
+        appendInt16(out, static_cast<int16_t>(door.y));
+        appendString(door.label);
+        appendString(door.dest);
+        appendString(door.id);
+    }
+    appendInt32(out, static_cast<int32_t>(world.signs.size()));
+    for (const WorldSign& sign : world.signs)
+    {
+        appendInt16(out, static_cast<int16_t>(sign.x));
+        appendInt16(out, static_cast<int16_t>(sign.y));
+        appendString(sign.text);
+    }
+    return out;
+}
+
+void parseWorldExtras(World& world, const std::vector<uint8_t>& blob, std::size_t offset)
+{
+    world.doors.clear();
+    world.signs.clear();
+    world.isPublic = false;
+    std::size_t pos = offset;
+    auto readU32 = [&](uint32_t& value) {
+        if (pos + 4 > blob.size())
+            return false;
+        std::memcpy(&value, blob.data() + pos, 4);
+        pos += 4;
+        return true;
+    };
+    auto readU16 = [&](uint32_t& value) {
+        if (pos + 2 > blob.size())
+            return false;
+        value = blob[pos] | (blob[pos + 1] << 8);
+        pos += 2;
+        return true;
+    };
+    auto readString = [&](std::string& value) {
+        uint32_t length = 0;
+        if (!readU16(length) || pos + length > blob.size())
+            return false;
+        value.assign(reinterpret_cast<const char*>(blob.data() + pos), length);
+        pos += length;
+        return true;
+    };
+
+    uint32_t marker = 0;
+    if (!readU32(marker) || marker != kExtrasMarker)
+        return; // legacy world without extras
+    if (pos < blob.size())
+        world.isPublic = blob[pos++] != 0;
+    else
+        return;
+    uint32_t doorCount = 0;
+    if (!readU32(doorCount) || doorCount > 10000)
+        return;
+    for (uint32_t i = 0; i < doorCount; ++i)
+    {
+        uint32_t x = 0, y = 0;
+        WorldDoor door;
+        if (!readU16(x) || !readU16(y) || !readString(door.label) || !readString(door.dest) ||
+            !readString(door.id))
+            return;
+        door.x = static_cast<int>(x);
+        door.y = static_cast<int>(y);
+        world.doors.push_back(door);
+    }
+    uint32_t signCount = 0;
+    if (!readU32(signCount) || signCount > 10000)
+        return;
+    for (uint32_t i = 0; i < signCount; ++i)
+    {
+        uint32_t x = 0, y = 0;
+        WorldSign sign;
+        if (!readU16(x) || !readU16(y) || !readString(sign.text))
+            return;
+        sign.x = static_cast<int>(x);
+        sign.y = static_cast<int>(y);
+        world.signs.push_back(sign);
     }
 }
 

@@ -9,6 +9,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <unordered_map>
+
 #include "config.hpp"
 #include "database.hpp"
 #include "login.hpp"
@@ -20,6 +22,25 @@
 
 namespace WildanDev
 {
+
+// /<emote> command name -> glyph shown in the bubble (GT growmoji set).
+inline const std::unordered_map<std::string, std::string> kEmoteGlyphs = {
+    {"wl", "\u0101"}, {"yes", "\u0102"}, {"love", "\u0104"}, {"oops", "\u0105"},
+    {"shy", "\u0106"}, {"wink", "\u0107"}, {"tongue", "\u0108"}, {"agree", "\u0109"},
+    {"sleep", "\u010a"}, {"punch", "\u010b"}, {"music", "\u010c"}, {"build", "\u010d"},
+    {"megaphone", "\u010e"}, {"sigh", "\u010f"}, {"mad", "\u0110"}, {"wow", "\u0111"},
+    {"dance", "\u0112"}, {"see-no-evil", "\u0113"}, {"bheart", "\u0114"}, {"heart", "\u0115"},
+    {"grow", "\u0116"}, {"gems", "\u0117"}, {"kiss", "\u0118"}, {"lol", "\u011a"},
+    {"smile", "\u011b"}, {"cool", "\u011c"}, {"cry", "\u011d"}, {"vend", "\u011e"},
+    {"bunny", "\u011f"}, {"cactus", "\u0120"}, {"pine", "\u0121"}, {"peace", "\u0122"},
+    {"terror", "\u0123"}, {"troll", "\u0124"}, {"evil", "\u0125"}, {"fireworks", "\u0126"},
+    {"football", "\u0127"}, {"alien", "\u0128"}, {"party", "\u0129"}, {"pizza", "\u012a"},
+    {"clap", "\u012b"}, {"song", "\u012c"}, {"ghost", "\u012d"}, {"nuke", "\u012e"},
+    {"halo", "\u012f"}, {"turkey", "\u0130"}, {"gift", "\u0131"}, {"cake", "\u0132"},
+    {"heartarrow", "\u0133"}, {"lucky", "\u0134"}, {"shamrock", "\u0135"}, {"grin", "\u0136"},
+    {"ill", "\u0137"}, {"eyes", "\u0138"}, {"weary", "\u0139"}, {"moyai", "\u013a"},
+    {"plead", "\u013b"},
+};
 
 struct ServerConfig
 {
@@ -98,6 +119,16 @@ public:
     void removeDropObject(World& world, Session& collector, uint32_t uid);
     void sendObjectState(const World& world, int32_t marker, uint32_t uid, int itemId, int count, float x,
                          float y);
+    void sendTileUpdate(World& world, int x, int y);
+
+    // Client dialogs (wrench editing, drop/trash pickers, store).
+    void handleDialogReturn(Session& session, const TextPacket& packet);
+    void sendWrenchTileDialog(Session& session, World& world, int x, int y);
+    void sendWrenchPlayerDialog(Session& session, int netId);
+    void sendStoreDialog(Session& session);
+    bool purchaseStoreItem(Session& session, const std::string& item);
+    void sendSetClothing(const Session& subject, bool toWholeWorld);
+    std::string roleColor(const Session& session) const;
 
     // Command framework.
     void registerCommand(const std::string& name, CommandEntry entry);
