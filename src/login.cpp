@@ -49,6 +49,23 @@ std::mutex g_throttleMutex;
 std::map<std::string, std::chrono::steady_clock::time_point> g_resetThrottle;
 // Per-IP budget: reset emails sent in the last hour.
 std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> g_mailBudget;
+// Per-IP rate limit for the username availability check.
+std::mutex g_checkMutex;
+std::map<std::string, std::pair<int, std::chrono::steady_clock::time_point>> g_checkBudget;
+
+bool checkEndpointAllowed(const std::string& ip)
+{
+    std::lock_guard<std::mutex> guard(g_checkMutex);
+    auto now = std::chrono::steady_clock::now();
+    auto& entry = g_checkBudget[ip];
+    if (now - entry.second > std::chrono::minutes(1))
+    {
+        entry.first = 0;
+        entry.second = now;
+    }
+    entry.first += 1;
+    return entry.first <= 60;
+}
 
 const unsigned char kFaviconPng[] = {
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
@@ -111,7 +128,9 @@ const char* kPageCss =
     "font-size:14px;font-weight:600;transition:transform .16s ease,filter .16s ease}\n"
     ".gbtn:hover{transform:translateY(-2px);filter:brightness(1.03);text-decoration:none}\n"
     ".sep{display:flex;align-items:center;gap:12px;color:var(--dim);font-size:12px;margin-top:16px}\n"
-    ".sep::before,.sep::after{content:'';flex:1;height:1px;background:var(--line)}\n";
+    ".sep::before,.sep::after{content:'';flex:1;height:1px;background:var(--line)}\n"
+    ".check{font-size:12.5px;font-weight:600;margin-top:5px;min-height:16px}\n"
+    ".check.ok{color:#34d399}.check.bad{color:#f87171}\n";
 
 std::string pageShell(const std::string& title, const std::string& body)
 {
@@ -170,8 +189,9 @@ std::string registerPage(const std::string& message, bool isError, bool googleEn
     return pageShell("WildanDev GTPS — Register",
                      "<h1 class=\"grad\">Create account</h1><p class=\"sub\">Pick a username and password.</p>" + msg +
                          "<form method=\"POST\" action=\"/player/growid/register\">"
-                         "<label>Username</label><input name=\"growId\" required maxlength=\"32\" "
-                         "pattern=\"[A-Za-z0-9_]{1,32}\">"
+                         "<label>Username</label><input name=\"growId\" id=\"growId\" required "
+                         "maxlength=\"32\" pattern=\"[A-Za-z0-9_]{1,32}\" autocomplete=\"off\">"
+                         "<div id=\"growIdCheck\" class=\"check\"></div>"
                          "<label>Password</label><input type=\"password\" name=\"password\" required "
                          "maxlength=\"64\">"
                          "<label>Confirm password</label><input type=\"password\" name=\"password2\" required "
@@ -179,7 +199,21 @@ std::string registerPage(const std::string& message, bool isError, bool googleEn
                          "<label>Email <span style=\"color:#6f8a71\">(optional — for password reset)</span>"
                          "</label><input type=\"email\" name=\"email\" maxlength=\"255\">"
                          "<button>Create account</button></form>" + google +
-                         "<div class=\"row\"><a href=\"/player/login/dashboard\">Back to login</a></div>");
+                         "<div class=\"row\"><a href=\"/player/login/dashboard\">Back to login</a></div>"
+                         "<script>"
+                         "(function(){var el=document.getElementById('growId');"
+                         "var hint=document.getElementById('growIdCheck');var t=null;"
+                         "el.addEventListener('input',function(){clearTimeout(t);var v=el.value;"
+                         "hint.textContent='';hint.className='check';if(!v)return;"
+                         "t=setTimeout(function(){"
+                         "fetch('/player/growid/check?growId='+encodeURIComponent(v))"
+                         ".then(function(r){return r.json()})"
+                         ".then(function(j){"
+                         "if(j.reason==='invalid'){hint.textContent='Only letters, digits and underscore (max 32)';hint.className='check bad';}"
+                         "else if(j.available){hint.textContent='Username is available';hint.className='check ok';}"
+                         "else{hint.textContent='Username is already taken';hint.className='check bad';}}"
+                         ").catch(function(){});},400);});})();"
+                         "</script>");
 }
 
 std::string forgotPage(const std::string& message, bool isError)
@@ -1244,6 +1278,37 @@ void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
                                                              : "That code is wrong or expired.",
                                            true));
                 }
+            }
+        }
+    }
+    else if (path == "/player/growid/check" && !isPost)
+    {
+        // Live username availability for the register form. Lightweight
+        // per-IP rate limit; invalid names report themselves.
+        std::string ip = resolveClientIp(request, socketIp);
+        if (!checkEndpointAllowed(ip))
+        {
+            sendResponse(ssl, 429, "Too Many Requests", "application/json",
+                         "{\"available\":false,\"reason\":\"slow\"}");
+        }
+        else
+        {
+            auto params = parseForm(request.query);
+            std::string grow = params.count("growId") ? params["growId"] : "";
+            if (!validGrowId(grow))
+            {
+                sendResponse(ssl, 200, "OK", "application/json",
+                             "{\"available\":false,\"reason\":\"invalid\"}");
+            }
+            else
+            {
+                bool taken = false;
+                {
+                    std::lock_guard<std::mutex> guard(m_dbMutex);
+                    taken = m_database.growIdExists(grow);
+                }
+                sendResponse(ssl, 200, "OK", "application/json",
+                             taken ? "{\"available\":false}" : "{\"available\":true}");
             }
         }
     }
