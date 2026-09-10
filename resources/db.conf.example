@@ -1,0 +1,5 @@
+# WildanDev GTPS - database configuration (copy to db.conf and fill in)
+host=127.0.0.1
+user=wildandev
+password=CHANGE_ME
+name=wildandev

@@ -1,0 +1,26 @@
+# Build output
+build/
+
+# Runtime state
+run/
+*.log
+*.pid
+
+# Secrets & local config (keep only *.example in VCS)
+resources/db.conf
+resources/certs/
+
+# Distributions & backups
+dist/
+backups/
+
+# Editor junk
+*.swp
+.DS_Store
+
+# Official Growtopia v26 items.dat (client game data)
+resources/items.dat
+
+# Python cache
+__pycache__/
+*.pyc
