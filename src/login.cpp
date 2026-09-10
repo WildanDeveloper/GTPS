@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -46,6 +47,8 @@ std::unordered_map<std::string, std::pair<std::string, std::string>> g_issuedTok
 // Per-username throttle for reset-code requests.
 std::mutex g_throttleMutex;
 std::map<std::string, std::chrono::steady_clock::time_point> g_resetThrottle;
+// Per-IP budget: reset emails sent in the last hour.
+std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> g_mailBudget;
 
 const unsigned char kFaviconPng[] = {
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
@@ -1090,6 +1093,15 @@ void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
                 {
                     last = now;
                 }
+                // Per-IP email budget: max 3 reset emails per hour.
+                if (failure.empty())
+                {
+                    auto& stamps = g_mailBudget[resolveClientIp(request, socketIp)];
+                    while (!stamps.empty() && now - stamps.front() > std::chrono::hours(1))
+                        stamps.pop_front();
+                    if (stamps.size() >= 3)
+                        failure = "Too many reset emails requested. Try again later.";
+                }
             }
             if (failure.empty())
             {
@@ -1114,6 +1126,11 @@ void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
                         std::string html = resetCodeEmailHtml(code);
                         std::string from = m_config.resendFrom;
                         std::string apiKey = m_config.resendApiKey;
+                        {
+                            std::lock_guard<std::mutex> guard(g_throttleMutex);
+                            g_mailBudget[resolveClientIp(request, socketIp)].push_back(
+                                std::chrono::steady_clock::now());
+                        }
                         std::thread([apiKey, from, email, html, playerId]() {
                             if (resendSendEmail(apiKey, from, email,
                                                 "WildanDev GTPS — password reset code", html))
@@ -1151,6 +1168,30 @@ void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
         std::string password = fields.count("password") ? fields["password"] : "";
         std::string password2 = fields.count("password2") ? fields["password2"] : "";
 
+        // Brute-force protection for the 6-digit code: the same guard system
+        // as login (5 wrong attempts -> 5-minute block, escalating).
+        std::string ip = resolveClientIp(request, socketIp);
+        std::string fp = fingerprintOf(request);
+        std::string userKey = "r:" + grow + "|" + ip;
+        std::string fpKey = "r:" + grow + "|" + fp;
+        guardPrune();
+        long wait = std::max({guardCheck(userKey), guardCheck(fpKey)});
+        if (wait > 0)
+        {
+            guardFail(userKey);
+            guardFail(fpKey);
+            long escalated = std::max({guardCheck(userKey), guardCheck(fpKey)});
+            logWarn("Rate-limited reset attempt for '" + grow + "' from " + ip + " (fp " + fp + ", " +
+                    std::to_string(escalated) + "s left)");
+            sendResponse(ssl, 200, "OK", "text/html",
+                         resetPage(grow, "Too many attempts. Try again in " +
+                                             std::to_string((escalated + 59) / 60) + " minute(s).",
+                                   true));
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            return;
+        }
+
         const char* error = nullptr;
         if (!validGrowId(grow))
             error = "Invalid username.";
@@ -1179,6 +1220,9 @@ void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
                 if (found && m_database.consumeResetCode(playerId, code))
                 {
                     m_database.updatePassword(playerId, password);
+                    m_database.clearResetCodes(playerId);
+                    guardClear(userKey);
+                    guardClear(fpKey);
                     sendResponse(ssl, 200, "OK", "text/html",
                                  messagePage("Password updated",
                                              "Your password has been changed. Log in with the new one.",
@@ -1186,8 +1230,19 @@ void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
                 }
                 else
                 {
+                    // Wrong code: rate-limit AND burn the code after 5 tries.
+                    guardFail(userKey);
+                    guardFail(fpKey);
+                    bool invalidated = false;
+                    if (found)
+                        invalidated = m_database.failResetCode(playerId);
+                    logWarn("Wrong reset code for '" + grow + "' from " + ip + " (fp " + fp + ")" +
+                            (invalidated ? " — code invalidated" : ""));
                     sendResponse(ssl, 200, "OK", "text/html",
-                                 resetPage(grow, "That code is wrong or expired.", true));
+                                 resetPage(grow, invalidated ? "Too many wrong attempts — request a new "
+                                                               "code."
+                                                             : "That code is wrong or expired.",
+                                           true));
                 }
             }
         }

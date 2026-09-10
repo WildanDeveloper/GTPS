@@ -182,7 +182,11 @@ bool Database::ensureSchema()
               "code_hash CHAR(64) NOT NULL,"
               "expires_at TIMESTAMP NOT NULL,"
               "used TINYINT NOT NULL DEFAULT 0,"
+              "attempts TINYINT NOT NULL DEFAULT 0,"
               "INDEX idx_pr_player (player_id))"))
+        return false;
+    if (!columnExists("password_resets", "attempts") &&
+        !exec("ALTER TABLE password_resets ADD COLUMN attempts TINYINT NOT NULL DEFAULT 0"))
         return false;
     if (!columnExists("players", "pass_hash"))
         return false;
@@ -771,6 +775,23 @@ bool Database::createResetCode(uint32_t playerId, const std::string& sixDigitCod
                 std::to_string(playerId) + ", '" +
                 escape(reinterpret_cast<const uint8_t*>(hash.data()), hash.size()) +
                 "', DATE_ADD(NOW(), INTERVAL " + std::to_string(ttlSeconds) + " SECOND))");
+}
+
+bool Database::failResetCode(uint32_t playerId)
+{
+    // Count the wrong attempt; the fifth invalidates the code.
+    if (!exec("UPDATE password_resets SET attempts = attempts + 1 WHERE player_id=" +
+              std::to_string(playerId) + " AND used=0"))
+        return false;
+    if (!exec("DELETE FROM password_resets WHERE player_id=" + std::to_string(playerId) +
+              " AND used=0 AND attempts >= 5"))
+        return false;
+    return mysql_affected_rows(m_handle) > 0; // true only when really wiped
+}
+
+bool Database::clearResetCodes(uint32_t playerId)
+{
+    return exec("DELETE FROM password_resets WHERE player_id=" + std::to_string(playerId));
 }
 
 bool Database::consumeResetCode(uint32_t playerId, const std::string& sixDigitCode)

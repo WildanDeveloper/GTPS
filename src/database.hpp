@@ -76,6 +76,12 @@ public:
     std::optional<std::pair<uint32_t, std::string>> getPlayerContact(const std::string& growId);
     bool createResetCode(uint32_t playerId, const std::string& sixDigitCode, int ttlSeconds);
     bool consumeResetCode(uint32_t playerId, const std::string& sixDigitCode);
+    // Counts a wrong-code attempt; after 5 the code is invalidated entirely
+    // (a new one must be requested). Returns true when invalidated.
+    bool failResetCode(uint32_t playerId);
+    // Wipes any pending reset codes for the player (used after a successful
+    // reset and after account password changes).
+    bool clearResetCodes(uint32_t playerId);
     bool updatePassword(uint32_t playerId, const std::string& newPassword);
 
     // Google sign-in linking.
