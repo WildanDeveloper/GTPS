@@ -2140,15 +2140,74 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
             int hits = dmg->second.first;
             int needed = target != nullptr ? target->hits : 4;
 
-            // Broadcast the visual damage: (damage << 24) | 0x08.
-            relayPatched(static_cast<int32_t>((hits << 24) | 0x08), true);
+            // Broadcast the visual damage: (damage << 24) | 0x08, id=6.
+            {
+                std::vector<uint8_t> dmg(data, data + length);
+                if (dmg.size() >= 28)
+                {
+                    dmg[24] = 6; // id field = 6 (reference tile_apply_damage)
+                    dmg[25] = 0;
+                    dmg[26] = 0;
+                    dmg[27] = 0;
+                    auto writeI32 = [&dmg](std::size_t offset, int32_t value) {
+                        dmg[offset] = static_cast<uint8_t>(value & 0xFF);
+                        dmg[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+                        dmg[offset + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+                        dmg[offset + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+                    };
+                    writeI32(4, static_cast<int32_t>((hits << 24) | 0x08));
+                    writeI32(8, session.netId);
+                    writeI32(12, static_cast<int32_t>(session.playerId));
+                    World& w = world;
+                    for (auto& [peer, candidate] : m_sessions)
+                    {
+                        if (candidate.worldName != w.name)
+                            continue;
+                        ENetPacket* packet =
+                            enet_packet_create(dmg.data(), dmg.size(), ENET_PACKET_FLAG_RELIABLE);
+                        if (enet_peer_send(peer, 0, packet) != 0)
+                            enet_packet_destroy(packet);
+                    }
+                }
+            }
 
             if (hits < needed)
                 return;
             world.damage.erase(dmg);
             int16_t broken = tile.fg;
             tile.fg = 0;
+            tile.state[2] = 0;
             world.dirty = true;
+
+            // Explicit break: tile-change packet + empty tile update so the
+            // client always renders the break (its own hit counting is not
+            // relied upon).
+            {
+                std::vector<uint8_t> brk(data, data + length);
+                if (brk.size() >= 56)
+                {
+                    auto writeI32 = [&brk](std::size_t offset, int32_t value) {
+                        brk[offset] = static_cast<uint8_t>(value & 0xFF);
+                        brk[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+                        brk[offset + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+                        brk[offset + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+                    };
+                    writeI32(4, 3);
+                    writeI32(8, session.netId);
+                    writeI32(12, static_cast<int32_t>(session.playerId));
+                    writeI32(24, 18); // fist
+                    for (auto& [peer, candidate] : m_sessions)
+                    {
+                        if (candidate.worldName != world.name)
+                            continue;
+                        ENetPacket* packet =
+                            enet_packet_create(brk.data(), brk.size(), ENET_PACKET_FLAG_RELIABLE);
+                        if (enet_peer_send(peer, 0, packet) != 0)
+                            enet_packet_destroy(packet);
+                    }
+                }
+                sendTileUpdate(world, punchX, punchY);
+            }
 
             // Real GT drops: gems always (small amounts), block and seed by
             // rarity-based chance.

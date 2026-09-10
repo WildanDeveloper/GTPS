@@ -20,6 +20,14 @@ void appendInt16(std::vector<uint8_t>& out, int16_t value)
     out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
 }
 
+void appendFloat(std::vector<uint8_t>& out, float value)
+{
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, 4);
+    for (int i = 0; i < 4; ++i)
+        out.push_back(static_cast<uint8_t>((bits >> (i * 8)) & 0xFF));
+}
+
 void appendInt32(std::vector<uint8_t>& out, int32_t value)
 {
     out.push_back(static_cast<uint8_t>(value & 0xFF));
@@ -102,9 +110,9 @@ World& WorldManager::getOrCreate(const std::string& name)
 void WorldManager::generate(World& world)
 {
     // Reference world generation (verified against working servers):
-    // sky to y36, cave background + dirt from y37, surface grass, rock and
-    // lava speckles in the dirt bands, bedrock from y54, main door labeled
-    // "EXIT" standing on a bedrock support at y36.
+    // sky to y36, cave background + solid dirt from y37 (no grass — GT
+    // generated worlds are all dirt), rock and lava speckles in the dirt
+    // bands, bedrock from y54, main door labeled "EXIT" at y36.
     static std::mt19937 rng{std::random_device{}()};
 
     for (int y = 0; y < kWorldHeight; ++y)
@@ -118,10 +126,6 @@ void WorldManager::generate(World& world)
             if (y >= 54)
             {
                 tile.fg = kBedrockItemId;
-            }
-            else if (y == 37)
-            {
-                tile.fg = kGrassItemId;
             }
             else
             {
@@ -327,8 +331,8 @@ std::vector<uint8_t> serializeWorld(const World& world)
     for (const WorldObject& object : world.objects)
     {
         appendInt16(out, static_cast<int16_t>(object.id));
-        appendInt32(out, static_cast<int32_t>(object.x));
-        appendInt32(out, static_cast<int32_t>(object.y));
+        appendFloat(out, object.x);
+        appendFloat(out, object.y);
         appendInt16(out, static_cast<int16_t>(object.count));
         appendInt32(out, static_cast<int32_t>(object.uid));
     }
