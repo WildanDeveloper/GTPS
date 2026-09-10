@@ -98,7 +98,13 @@ const char* kPageCss =
     ".code{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:34px;font-weight:700;"
     "letter-spacing:10px;background:var(--grad);-webkit-background-clip:text;background-clip:text;"
     "color:transparent;text-align:center;padding:16px 0 8px}\n"
-    ".hint{font-size:12px;color:var(--dim);margin-top:12px;line-height:1.55}\n";
+    ".hint{font-size:12px;color:var(--dim);margin-top:12px;line-height:1.55}\n"
+    ".gbtn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin-top:14px;"
+    "padding:11px;border:1px solid var(--line2);border-radius:11px;background:#fff;color:#1f2937;"
+    "font-size:14px;font-weight:600;transition:transform .16s ease,filter .16s ease}\n"
+    ".gbtn:hover{transform:translateY(-2px);filter:brightness(1.03);text-decoration:none}\n"
+    ".sep{display:flex;align-items:center;gap:12px;color:var(--dim);font-size:12px;margin-top:16px}\n"
+    ".sep::before,.sep::after{content:'';flex:1;height:1px;background:var(--line)}\n";
 
 std::string pageShell(const std::string& title, const std::string& body)
 {
@@ -122,24 +128,38 @@ const char* kLoginPage =
     "<label>Password</label><input type=\"password\" name=\"password\" required maxlength=\"64\">"
     "<button>Log in</button></form>";
 
-std::string loginPage(const std::string& token, const std::string& message, bool isError)
+std::string loginPage(const std::string& token, const std::string& message, bool isError,
+                      bool googleEnabled)
 {
     std::string msg = message.empty()
                           ? ""
                           : "<div class=\"msg " + std::string(isError ? "err" : "") + "\">" + message + "</div>";
     std::string page = kLoginPage;
     page.replace(page.find("__TOKEN__"), 9, token);
+    std::string google = googleEnabled
+                             ? "<div class=\"sep\"><span>or</span></div>"
+                               "<a class=\"gbtn\" href=\"/player/auth/google\">"
+                               "<svg width=\"18\" height=\"18\" viewBox=\"0 0 48 48\"><path fill=\"#EA4335\" d=\"M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z\"/><path fill=\"#4285F4\" d=\"M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z\"/><path fill=\"#FBBC05\" d=\"M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z\"/><path fill=\"#34A853\" d=\"M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z\"/></svg>"
+                               "Continue with Google</a>"
+                             : "";
     return pageShell("WildanDev GTPS — Login",
                      "<h1 class=\"grad\">WildanDev GTPS</h1><p class=\"sub\">Log in with your account.</p>" + msg + page +
+                         google +
                          "<div class=\"row\"><a href=\"/player/forgot\">Forgot password?</a>"
                          "<a href=\"/player/register\">Create account</a></div>");
 }
 
-std::string registerPage(const std::string& message, bool isError)
+std::string registerPage(const std::string& message, bool isError, bool googleEnabled)
 {
     std::string msg = message.empty()
                           ? ""
                           : "<div class=\"msg " + std::string(isError ? "err" : "") + "\">" + message + "</div>";
+    std::string google = googleEnabled
+                             ? "<div class=\"sep\"><span>or</span></div>"
+                               "<a class=\"gbtn\" href=\"/player/auth/google\">"
+                               "<svg width=\"18\" height=\"18\" viewBox=\"0 0 48 48\"><path fill=\"#EA4335\" d=\"M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z\"/><path fill=\"#4285F4\" d=\"M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z\"/><path fill=\"#FBBC05\" d=\"M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z\"/><path fill=\"#34A853\" d=\"M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z\"/></svg>"
+                               "Continue with Google</a>"
+                             : "";
     return pageShell("WildanDev GTPS — Register",
                      "<h1 class=\"grad\">Create account</h1><p class=\"sub\">Pick a username and password.</p>" + msg +
                          "<form method=\"POST\" action=\"/player/growid/register\">"
@@ -151,7 +171,7 @@ std::string registerPage(const std::string& message, bool isError)
                          "maxlength=\"64\">"
                          "<label>Email <span style=\"color:#6f8a71\">(optional — for password reset)</span>"
                          "</label><input type=\"email\" name=\"email\" maxlength=\"255\">"
-                         "<button>Create account</button></form>"
+                         "<button>Create account</button></form>" + google +
                          "<div class=\"row\"><a href=\"/player/login/dashboard\">Back to login</a></div>");
 }
 
@@ -352,6 +372,7 @@ struct HttpRequest
 {
     std::string method;
     std::string path;
+    std::string query; // raw query string (after '?'), may be empty
     std::unordered_map<std::string, std::string> headers;
     std::string body;
 };
@@ -402,9 +423,12 @@ bool readRequest(SSL* ssl, HttpRequest& request)
         return false;
     request.method = line.substr(0, space1);
     request.path = line.substr(space1 + 1, space2 - space1 - 1);
-    auto query = request.path.find('?');
-    if (query != std::string::npos)
-        request.path = request.path.substr(0, query);
+    auto queryAt = request.path.find('?');
+    if (queryAt != std::string::npos)
+    {
+        request.query = request.path.substr(queryAt + 1);
+        request.path = request.path.substr(0, queryAt);
+    }
 
     std::string headerLine;
     while (std::getline(head, headerLine))
@@ -448,16 +472,18 @@ bool sendResponse(SSL* ssl, int code, const std::string& reason, const std::stri
 // Resend.com email delivery
 // ---------------------------------------------------------------------------
 
-bool resendSendEmail(const std::string& apiKey, const std::string& from, const std::string& to,
-                     const std::string& subject, const std::string& html)
+// Minimal HTTPS POST client (OpenSSL). Returns true on 2xx; response body
+// is copied into responseOut when non-null.
+bool httpsPost(const std::string& host, const std::string& path, const std::string& body,
+               const std::vector<std::string>& headers, std::string* responseOut)
 {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     addrinfo* resolved = nullptr;
-    if (getaddrinfo("api.resend.com", "443", &hints, &resolved) != 0 || resolved == nullptr)
+    if (getaddrinfo(host.c_str(), "443", &hints, &resolved) != 0 || resolved == nullptr)
     {
-        logError("Resend: DNS resolve failed");
+        logError("HTTPS POST " + host + ": DNS resolve failed");
         return false;
     }
 
@@ -479,7 +505,7 @@ bool resendSendEmail(const std::string& apiKey, const std::string& from, const s
     freeaddrinfo(resolved);
     if (fd < 0)
     {
-        logError("Resend: connect failed");
+        logError("HTTPS POST " + host + ": connect failed");
         return false;
     }
 
@@ -492,50 +518,146 @@ bool resendSendEmail(const std::string& apiKey, const std::string& from, const s
     SSL_CTX_set_default_verify_paths(ctx);
     SSL* ssl = SSL_new(ctx);
     SSL_set_fd(ssl, fd);
-    SSL_set_tlsext_host_name(ssl, "api.resend.com");
-    SSL_set1_host(ssl, "api.resend.com");
+    SSL_set_tlsext_host_name(ssl, host.c_str());
+    SSL_set1_host(ssl, host.c_str());
     if (SSL_connect(ssl) != 1)
     {
-        logError("Resend: TLS connect failed");
+        logError("HTTPS POST " + host + ": TLS connect failed");
         SSL_free(ssl);
         SSL_CTX_free(ctx);
         close(fd);
         return false;
     }
 
-    std::string payload = "{\"from\":\"" + jsonEscape(from) + "\",\"to\":[\"" + jsonEscape(to) +
-                          "\"],\"subject\":\"" + jsonEscape(subject) + "\",\"html\":\"" + jsonEscape(html) +
-                          "\"}";
-    std::string request = "POST /emails HTTP/1.1\r\n"
-                          "Host: api.resend.com\r\n"
-                          "Authorization: Bearer " + apiKey + "\r\n"
-                          "Content-Type: application/json\r\n"
-                          "Content-Length: " + std::to_string(payload.size()) + "\r\n"
-                          "Connection: close\r\n\r\n" + payload;
+    std::string request = "POST " + path + " HTTP/1.1\r\n"
+                          "Host: " + host + "\r\n"
+                          "Connection: close\r\n"
+                          "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    for (const auto& header : headers)
+        request += header + "\r\n";
+    request += "\r\n" + body;
+
     bool sent = SSL_write(ssl, request.data(), static_cast<int>(request.size())) ==
                 static_cast<int>(request.size());
-
-    // Read the status line only; the rest does not matter for delivery.
     bool accepted = false;
     if (sent)
     {
-        char buffer[512] = {};
-        int n = SSL_read(ssl, buffer, sizeof(buffer) - 1);
-        if (n > 0)
+        std::string response;
+        char buffer[4096];
+        int n;
+        while (response.size() < 1024 * 1024 && (n = SSL_read(ssl, buffer, sizeof(buffer))) > 0)
+            response.append(buffer, static_cast<std::size_t>(n));
+        accepted = response.rfind("HTTP/1.1 2", 0) == 0 || response.rfind("HTTP/1.0 2", 0) == 0;
+        if (responseOut != nullptr)
         {
-            buffer[n] = 0;
-            accepted = std::strncmp(buffer, "HTTP/1.1 2", 10) == 0 ||
-                       std::strncmp(buffer, "HTTP/1.0 2", 10) == 0;
+            auto bodyStart = response.find("\r\n\r\n");
+            if (bodyStart != std::string::npos)
+                *responseOut = response.substr(bodyStart + 4);
+            else
+                *responseOut = response;
         }
     }
     SSL_shutdown(ssl);
     SSL_free(ssl);
     SSL_CTX_free(ctx);
     close(fd);
+    return accepted;
+}
+
+bool resendSendEmail(const std::string& apiKey, const std::string& from, const std::string& to,
+                     const std::string& subject, const std::string& html)
+{
+    std::string payload = "{\"from\":\"" + jsonEscape(from) + "\",\"to\":[\"" + jsonEscape(to) +
+                          "\"],\"subject\":\"" + jsonEscape(subject) + "\",\"html\":\"" + jsonEscape(html) +
+                          "\"}";
+    bool accepted = httpsPost("api.resend.com", "/emails", payload,
+                              {"Authorization: Bearer " + apiKey, "Content-Type: application/json"}, nullptr);
     if (!accepted)
         logError("Resend: email rejected by API (check resend_api_key / sender address)");
     return accepted;
 }
+
+// Extracts "key":"value" from a flat JSON document (no nested objects in
+// the values we care about).
+bool jsonGetString(const std::string& json, const std::string& key, std::string& out)
+{
+    std::string needle = "\"" + key + "\"";
+    auto at = json.find(needle);
+    if (at == std::string::npos)
+        return false;
+    at = json.find(':', at + needle.size());
+    if (at == std::string::npos)
+        return false;
+    ++at;
+    while (at < json.size() && (json[at] == ' ' || json[at] == '\t'))
+        ++at;
+    if (at >= json.size() || json[at] != '"')
+        return false;
+    ++at;
+    std::string value;
+    while (at < json.size() && json[at] != '"')
+    {
+        if (json[at] == '\\' && at + 1 < json.size())
+        {
+            ++at;
+            if (json[at] == 'n') value.push_back('\n');
+            else value.push_back(json[at]);
+        }
+        else
+        {
+            value.push_back(json[at]);
+        }
+        ++at;
+    }
+    out = value;
+    return true;
+}
+
+std::string base64UrlDecode(const std::string& input)
+{
+    std::string text = input;
+    for (char& c : text)
+    {
+        if (c == '-') c = '+';
+        else if (c == '_') c = '/';
+    }
+    while (text.size() % 4 != 0)
+        text.push_back('=');
+    auto decoded = Base64::decode(text);
+    return decoded.has_value() ? decoded.value() : "";
+}
+
+std::string generateRandomPassword()
+{
+    static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+    unsigned char bytes[24] = {};
+    if (RAND_bytes(bytes, sizeof(bytes)) != 1)
+        return "";
+    std::string out;
+    for (unsigned char byte : bytes)
+        out.push_back(alphabet[byte % (sizeof(alphabet) - 1)]);
+    return out;
+}
+
+std::string generateStateToken()
+{
+    unsigned char bytes[16] = {};
+    if (RAND_bytes(bytes, sizeof(bytes)) != 1)
+        return "";
+    std::ostringstream out;
+    out << std::hex;
+    for (unsigned char byte : bytes)
+    {
+        out.width(2);
+        out.fill('0');
+        out << static_cast<int>(byte);
+    }
+    return out.str();
+}
+
+// Pending OAuth states (CSRF protection), expiring after 10 minutes.
+std::mutex g_stateMutex;
+std::map<std::string, std::chrono::steady_clock::time_point> g_oauthStates;
 
 std::string resetCodeEmailHtml(const std::string& code)
 {
@@ -719,11 +841,12 @@ void LoginService::handleConnection(SSL* ssl)
             if (tokenSource.find('=') != std::string::npos && tokenSource.rfind("proto", 0) != 0)
                 tokenSource = tokenSource.substr(0, tokenSource.find('='));
         }
-        sendResponse(ssl, 200, "OK", "text/html", loginPage(Base64::encode(tokenSource), "", false));
+        sendResponse(ssl, 200, "OK", "text/html",
+                     loginPage(Base64::encode(tokenSource), "", false, !m_config.googleClientId.empty()));
     }
     else if (path == "/player/register" && !isPost)
     {
-        sendResponse(ssl, 200, "OK", "text/html", registerPage("", false));
+        sendResponse(ssl, 200, "OK", "text/html", registerPage("", false, !m_config.googleClientId.empty()));
     }
     else if (path == "/player/forgot" && !isPost)
     {
@@ -753,7 +876,7 @@ void LoginService::handleConnection(SSL* ssl)
 
         if (error != nullptr)
         {
-            sendResponse(ssl, 200, "OK", "text/html", registerPage(error, true));
+            sendResponse(ssl, 200, "OK", "text/html", registerPage(error, true, !m_config.googleClientId.empty()));
         }
         else
         {
@@ -761,10 +884,12 @@ void LoginService::handleConnection(SSL* ssl)
             auto result = m_database.registerPlayer(grow, password, email, m_config.defaultRoleId);
             if (result == Database::RegisterResult::Duplicate)
                 sendResponse(ssl, 200, "OK", "text/html",
-                             registerPage("That username is already taken.", true));
+                             registerPage("That username is already taken.", true,
+                                          !m_config.googleClientId.empty()));
             else if (result != Database::RegisterResult::Ok)
                 sendResponse(ssl, 200, "OK", "text/html",
-                             registerPage("Could not create the account, try again.", true));
+                             registerPage("Could not create the account, try again.", true,
+                                          !m_config.googleClientId.empty()));
             else
                 sendResponse(ssl, 200, "OK", "text/html",
                              messagePage("Account created", "Account <b>" + grow + "</b> is ready. Log in "
@@ -935,6 +1060,250 @@ void LoginService::handleConnection(SSL* ssl)
             sendResponse(ssl, 200, "OK", "application/json", body,
                          {"Set-Cookie: gtps_token=" + account + "; Path=/; HttpOnly; Secure",
                           "Set-Cookie: growId=" + grow + "; Path=/; HttpOnly; Secure"});
+        }
+    }
+    else if (path == "/player/auth/google" && !isPost)
+    {
+        if (m_config.googleClientId.empty())
+        {
+            sendResponse(ssl, 200, "OK", "text/html",
+                         messagePage("Google sign-in", "Google sign-in is not configured on this server.",
+                                     "/player/login/dashboard", "Back to login"));
+        }
+        else
+        {
+            std::string state = generateStateToken();
+            if (state.empty())
+            {
+                sendResponse(ssl, 500, "Internal Server Error", "text/plain", "state generation failed");
+            }
+            else
+            {
+                {
+                    std::lock_guard<std::mutex> guard(g_stateMutex);
+                    g_oauthStates[state] = std::chrono::steady_clock::now();
+                }
+                // Encode only the parameter values (':' and '/' in the
+                // redirect_uri must not break the query).
+                auto urlEncode = [](const std::string& text) {
+                    std::string encoded;
+                    for (char c : text)
+                    {
+                        if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' ||
+                            c == '.' || c == '~')
+                            encoded.push_back(c);
+                        else
+                        {
+                            char buf[8];
+                            std::snprintf(buf, sizeof(buf), "%%%02X", static_cast<unsigned char>(c));
+                            encoded += buf;
+                        }
+                    }
+                    return encoded;
+                };
+                std::ostringstream out;
+                out << "HTTP/1.1 302 Found\r\nLocation: https://accounts.google.com/o/oauth2/v2/auth"
+                    << "?client_id=" << urlEncode(m_config.googleClientId)
+                    << "&redirect_uri=" << urlEncode(m_config.googleRedirectUri)
+                    << "&response_type=code"
+                    << "&scope=openid%20email"
+                    << "&state=" << state
+                    << "&prompt=select_account"
+                    << "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                SSL_write(ssl, out.str().data(), static_cast<int>(out.str().size()));
+            }
+        }
+    }
+    else if (path == "/player/auth/google/callback" && !isPost)
+    {
+        auto fields = parseForm(request.body);
+        // Callback query params live in the raw request line; re-parse them
+        // from the original path-with-query is already stripped, so read the
+        // code/state from the stored query (kept in request.headers by readRequest).
+        std::string code = fields.count("code") ? fields["code"] : "";
+        std::string state = fields.count("state") ? fields["state"] : "";
+        std::string oauthError = fields.count("error") ? fields["error"] : "";
+        // readRequest strips the query; recover it from the raw path we saved.
+        std::string rawQuery = request.query;
+        if (!rawQuery.empty())
+        {
+            auto callbackFields = parseForm(rawQuery);
+            if (callbackFields.count("code")) code = callbackFields["code"];
+            if (callbackFields.count("state")) state = callbackFields["state"];
+            if (callbackFields.count("error")) oauthError = callbackFields["error"];
+        }
+
+        std::string fail;
+        bool validState = false;
+        {
+            std::lock_guard<std::mutex> guard(g_stateMutex);
+            auto it = g_oauthStates.find(state);
+            if (it != g_oauthStates.end())
+            {
+                validState = true;
+                g_oauthStates.erase(it);
+            }
+            // Expire stale states.
+            auto now = std::chrono::steady_clock::now();
+            for (auto sit = g_oauthStates.begin(); sit != g_oauthStates.end();)
+            {
+                if (now - sit->second > std::chrono::minutes(10))
+                    sit = g_oauthStates.erase(sit);
+                else
+                    ++sit;
+            }
+        }
+        if (m_config.googleClientId.empty())
+            fail = "Google sign-in is not configured.";
+        else if (!oauthError.empty())
+            fail = "Google sign-in was cancelled.";
+        else if (!validState || code.empty())
+            fail = "Invalid sign-in session. Try again.";
+
+        std::string email, sub;
+        if (fail.empty())
+        {
+            // Exchange the authorization code for an id_token.
+            std::string body = "code=" + code + "&client_id=" + m_config.googleClientId +
+                               "&client_secret=" + m_config.googleClientSecret + "&redirect_uri=" +
+                               m_config.googleRedirectUri + "&grant_type=authorization_code";
+            std::string response;
+            if (!httpsPost("oauth2.googleapis.com", "/token", body,
+                           {"Content-Type: application/x-www-form-urlencoded"}, &response))
+            {
+                fail = "Could not reach Google. Try again.";
+            }
+            else if (!jsonGetString(response, "id_token", email))
+            {
+                fail = "Google did not return a sign-in token.";
+            }
+            else
+            {
+                // id_token = header.payload.signature; the payload carries sub/email.
+                auto p1 = email.find('.');
+                auto p2 = email.find('.', p1 + 1);
+                if (p1 == std::string::npos || p2 == std::string::npos)
+                {
+                    fail = "Malformed Google token.";
+                    email.clear();
+                }
+                else
+                {
+                    std::string payload = base64UrlDecode(email.substr(p1 + 1, p2 - p1 - 1));
+                    std::string subValue;
+                    std::string emailValue;
+                    if (!jsonGetString(payload, "sub", subValue) ||
+                        !jsonGetString(payload, "email", emailValue) || subValue.empty() ||
+                        emailValue.empty())
+                    {
+                        fail = "Google account has no usable email.";
+                    }
+                    else
+                    {
+                        // The token came straight from Google's token endpoint
+                        // over TLS, so the payload is trusted as-is.
+                        sub = subValue;
+                        email = emailValue;
+                    }
+                }
+            }
+        }
+
+        if (!fail.empty())
+        {
+            sendResponse(ssl, 200, "OK", "text/html",
+                         messagePage("Google sign-in", fail, "/player/login/dashboard", "Back to login"));
+        }
+        else
+        {
+            // Find or create the linked account, then issue a fresh random
+            // password and return the same JSON the client expects from
+            // login/validate — the webview sniffs it and continues the login.
+            std::lock_guard<std::mutex> guard(m_dbMutex);
+            uint32_t playerId = 0;
+            std::string growId;
+            if (auto linked = m_database.findPlayerByGoogleSub(sub))
+            {
+                playerId = linked->first;
+                growId = linked->second;
+            }
+            else
+            {
+                auto byEmail = m_database.findPlayerByEmail(email);
+                if (byEmail.has_value())
+                {
+                    auto [id, name, alreadyLinked] = byEmail.value();
+                    if (alreadyLinked)
+                    {
+                        fail = "That Google account is linked to a different player.";
+                    }
+                    else
+                    {
+                        playerId = id;
+                        growId = name;
+                        m_database.setGoogleSub(playerId, sub);
+                    }
+                }
+                else
+                {
+                    // New account: derive a unique username from the email.
+                    std::string base = email.substr(0, email.find('@'));
+                    std::string candidate;
+                    for (char c : base)
+                    {
+                        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_')
+                            candidate.push_back(c);
+                    }
+                    if (candidate.empty() || std::isdigit(static_cast<unsigned char>(candidate[0])))
+                        candidate = "Player" + candidate;
+                    if (candidate.size() > 24)
+                        candidate.resize(24);
+                    std::string unique = candidate;
+                    for (int i = 2; m_database.growIdExists(unique); ++i)
+                        unique = candidate + std::to_string(i);
+                    if (unique.size() > 32)
+                        unique = unique.substr(0, 32);
+                    auto created = m_database.registerGooglePlayer(unique, sub, email, m_config.defaultRoleId);
+                    if (created == Database::RegisterResult::Ok)
+                    {
+                        if (auto row = m_database.findPlayerId(unique))
+                        {
+                            playerId = *row;
+                            growId = unique;
+                        }
+                    }
+                    else if (created == Database::RegisterResult::Duplicate)
+                    {
+                        fail = "That username is taken — try signing in again.";
+                    }
+                    else
+                    {
+                        fail = "Could not create the account, try again.";
+                    }
+                }
+            }
+
+            if (!fail.empty())
+            {
+                sendResponse(ssl, 200, "OK", "text/html",
+                             messagePage("Google sign-in", fail, "/player/login/dashboard",
+                                         "Back to login"));
+            }
+            else
+            {
+                std::string password = generateRandomPassword();
+                m_database.updatePassword(playerId, password);
+                std::string account = Base64::encode("_token=google&growId=" + growId +
+                                                     "&password=" + password);
+                {
+                    std::lock_guard<std::mutex> tokenGuard(g_issuedMutex);
+                    g_issuedTokens[account] = {growId, password};
+                }
+                std::string body = "{\"status\":\"success\",\"message\":\"Account Validated.\",\"token\":\"" +
+                                   jsonEscape(account) + "\",\"url\":\"\",\"accountType\":\"growtopia\"}";
+                sendResponse(ssl, 200, "OK", "application/json", body);
+                logInfo("Google sign-in completed for " + growId);
+            }
         }
     }
     else if (path == "/player/growid/checktoken" && isPost)

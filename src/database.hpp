@@ -5,6 +5,7 @@
 #include <mysql/mysql.h>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace WildanDev
@@ -76,6 +77,15 @@ public:
     bool createResetCode(uint32_t playerId, const std::string& sixDigitCode, int ttlSeconds);
     bool consumeResetCode(uint32_t playerId, const std::string& sixDigitCode);
     bool updatePassword(uint32_t playerId, const std::string& newPassword);
+
+    // Google sign-in linking.
+    std::optional<std::pair<uint32_t, std::string>> findPlayerByGoogleSub(const std::string& sub);
+    // (player_id, growId, already-linked-to-google) by exact email match.
+    std::optional<std::tuple<uint32_t, std::string, bool>> findPlayerByEmail(const std::string& email);
+    bool setGoogleSub(uint32_t playerId, const std::string& sub);
+    bool growIdExists(const std::string& growId);
+    RegisterResult registerGooglePlayer(const std::string& growId, const std::string& sub,
+                                        const std::string& email, int defaultRoleId);
 
     // Low-level helpers for binary-safe world storage.
     bool exec(const std::string& sql);

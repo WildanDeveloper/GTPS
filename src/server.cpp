@@ -204,6 +204,17 @@ bool GameServer::start()
             logInfo("Password recovery email enabled via Resend");
     }
 
+    // Optional Google sign-in (OAuth 2.0).
+    Config googleConf;
+    if (googleConf.load(m_config.resourcesDir + "/google.conf"))
+    {
+        login.googleClientId = googleConf.get("client_id", "");
+        login.googleClientSecret = googleConf.get("client_secret", "");
+        login.googleRedirectUri = googleConf.get("redirect_uri", "");
+        if (!login.googleClientId.empty())
+            logInfo("Google sign-in enabled");
+    }
+
     m_login.start(login);
     return true;
 }

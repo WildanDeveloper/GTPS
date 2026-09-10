@@ -25,6 +25,10 @@ struct LoginConfig
     // Resend.com email delivery (password recovery). Empty key disables it.
     std::string resendApiKey;
     std::string resendFrom{"WildanDev GTPS <onboarding@resend.dev>"};
+    // Google sign-in (OAuth 2.0). Empty client id hides the button.
+    std::string googleClientId;
+    std::string googleClientSecret;
+    std::string googleRedirectUri;
     int defaultRoleId{4};
 };
 

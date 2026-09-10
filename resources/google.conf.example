@@ -1,0 +1,6 @@
+# Google sign-in (OAuth 2.0).
+# Create credentials at https://console.cloud.google.com/apis/credentials
+# Type: Web application. Authorized redirect URI must match redirect_uri.
+client_id=xxxxx.apps.googleusercontent.com
+client_secret=GOCSPX-xxxxx
+redirect_uri=https://gt.wildandev.tech/player/auth/google/callback
