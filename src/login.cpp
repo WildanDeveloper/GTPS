@@ -809,6 +809,17 @@ std::string resolveClientIp(const HttpRequest& request, const std::string& socke
     return socketIp;
 }
 
+// The Growtopia client loads these pages inside an Android WebView; its
+// user agent carries the "; wv)" marker. Regular browsers do not.
+bool isClientWebView(const HttpRequest& request)
+{
+    auto it = request.headers.find("user-agent");
+    if (it == request.headers.end())
+        return false;
+    const std::string& ua = it->second;
+    return ua.find("; wv)") != std::string::npos || ua.find("Growtopia") != std::string::npos;
+}
+
 // Device fingerprint: hash of the identifying request headers.
 std::string fingerprintOf(const HttpRequest& request)
 {
@@ -1095,6 +1106,22 @@ void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
                 sendResponse(ssl, 200, "OK", "text/html",
                              registerPage("Could not create the account, try again.", true,
                                           !m_config.googleClientId.empty()));
+            else if (isClientWebView(request))
+            {
+                // Registered from inside the game client: answer with the
+                // same token JSON as login/validate so the webview sniffs it
+                // and continues straight into the game.
+                std::string account = Base64::encode("_token=register&growId=" + grow +
+                                                     "&password=" + password);
+                {
+                    std::lock_guard<std::mutex> guard(g_issuedMutex);
+                    g_issuedTokens[account] = {grow, password};
+                }
+                sendResponse(ssl, 200, "OK", "application/json",
+                             "{\"status\":\"success\",\"message\":\"Account Validated.\",\"token\":\"" +
+                                 jsonEscape(account) + "\",\"url\":\"\",\"accountType\":\"growtopia\"}");
+                logInfo("Registered + logged in via client webview: " + grow);
+            }
             else
                 sendResponse(ssl, 200, "OK", "text/html",
                              messagePage("Account created", "Account <b>" + grow + "</b> is ready. Log in "
