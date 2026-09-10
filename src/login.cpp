@@ -685,10 +685,19 @@ void LoginService::handleConnection(SSL* ssl)
         else
             sendResponse(ssl, 200, "OK", "text/plain", content);
     }
-    else if (path.rfind("/player/login/dashboard", 0) == 0 && !isPost)
+    else if (path.rfind("/player/login/dashboard", 0) == 0)
     {
-        sendResponse(ssl, 200, "OK", "text/html",
-                     loginPage(Base64::encode("proto=225"), "", false));
+        // The Growtopia client reaches the dashboard with both GET (page
+        // load) and POST (form submit). On POST the client expects the page
+        // re-rendered with the first form field key as the token.
+        std::string tokenSource = "proto=225";
+        if (isPost && !request.body.empty())
+        {
+            tokenSource = urlDecode(request.body.substr(0, request.body.find('&')));
+            if (tokenSource.find('=') != std::string::npos && tokenSource.rfind("proto", 0) != 0)
+                tokenSource = tokenSource.substr(0, tokenSource.find('='));
+        }
+        sendResponse(ssl, 200, "OK", "text/html", loginPage(Base64::encode(tokenSource), "", false));
     }
     else if (path == "/player/register" && !isPost)
     {
