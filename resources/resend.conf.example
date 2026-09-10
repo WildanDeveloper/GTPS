@@ -1,0 +1,5 @@
+# Resend.com email delivery (password recovery codes).
+# Get an API key at https://resend.com/api-keys
+# from must be a verified sender domain in your Resend account.
+api_key=re_REPLACE_ME
+from=WildanDev GTPS <noreply@wildandev.tech>

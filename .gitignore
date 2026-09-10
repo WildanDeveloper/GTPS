@@ -24,3 +24,6 @@ resources/items.dat
 # Python cache
 __pycache__/
 *.pyc
+
+# Resend email API key
+resources/resend.conf

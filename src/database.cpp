@@ -169,6 +169,15 @@ bool Database::ensureSchema()
         return false;
     if (!columnExists("players", "gems") && !exec("ALTER TABLE players ADD COLUMN gems INT NOT NULL DEFAULT 0"))
         return false;
+    if (!columnExists("players", "email") && !exec("ALTER TABLE players ADD COLUMN email VARCHAR(255) NULL DEFAULT NULL"))
+        return false;
+    if (!exec("CREATE TABLE IF NOT EXISTS password_resets ("
+              "player_id INT UNSIGNED NOT NULL,"
+              "code_hash CHAR(64) NOT NULL,"
+              "expires_at TIMESTAMP NOT NULL,"
+              "used TINYINT NOT NULL DEFAULT 0,"
+              "INDEX idx_pr_player (player_id))"))
+        return false;
     if (!columnExists("players", "pass_hash"))
         return false;
     // Widen hash/salt columns for pre-PBKDF2 databases (no-op when already
@@ -658,6 +667,156 @@ std::optional<std::string> Database::findPlayerById(uint32_t playerId)
         result = std::string(nameBuf, nameLen);
     mysql_stmt_close(stmt);
     return result;
+}
+
+Database::RegisterResult Database::registerPlayer(const std::string& growId, const std::string& password,
+                                                  const std::string& email, int defaultRoleId)
+{
+    if (!ensureConnection())
+        return RegisterResult::Error;
+
+    unsigned char saltBytes[16] = {};
+    if (RAND_bytes(saltBytes, sizeof(saltBytes)) != 1)
+        return RegisterResult::Error;
+    std::ostringstream saltOut;
+    saltOut << std::hex;
+    for (unsigned char byte : saltBytes)
+    {
+        saltOut.width(2);
+        saltOut.fill('0');
+        saltOut << static_cast<int>(byte);
+    }
+    std::string salt = saltOut.str();
+    std::string hash = hashPassword(salt, password);
+    if (hash.empty())
+        return RegisterResult::Error;
+
+    MYSQL_STMT* stmt = mysql_stmt_init(m_handle);
+    if (stmt == nullptr)
+        return RegisterResult::Error;
+    constexpr char kInsert[] =
+        "INSERT INTO players (growid, pass_hash, salt, role_id, email) VALUES (?, ?, ?, ?, ?)";
+    if (mysql_stmt_prepare(stmt, kInsert, std::strlen(kInsert)) != 0)
+    {
+        mysql_stmt_close(stmt);
+        return RegisterResult::Error;
+    }
+    BoundString growValue(growId), hashValue(hash), saltValue(salt);
+    BoundInt roleValue(defaultRoleId);
+    BoundString emailValue(email); // empty string = no email on file
+    MYSQL_BIND in[5] = {growValue.bind, hashValue.bind, saltValue.bind, roleValue.bind, emailValue.bind};
+    bool ok = mysql_stmt_bind_param(stmt, in) == 0 && mysql_stmt_execute(stmt) == 0;
+    bool duplicate = mysql_stmt_errno(stmt) == 1062;
+    mysql_stmt_close(stmt);
+    if (!ok)
+        return duplicate ? RegisterResult::Duplicate : RegisterResult::Error;
+    return RegisterResult::Ok;
+}
+
+std::optional<std::pair<uint32_t, std::string>> Database::getPlayerContact(const std::string& growId)
+{
+    if (!ensureConnection())
+        return std::nullopt;
+    MYSQL_STMT* stmt = mysql_stmt_init(m_handle);
+    if (stmt == nullptr)
+        return std::nullopt;
+    constexpr char kSelect[] = "SELECT id, COALESCE(email, '') FROM players WHERE growid = ? LIMIT 1";
+    if (mysql_stmt_prepare(stmt, kSelect, std::strlen(kSelect)) != 0)
+    {
+        mysql_stmt_close(stmt);
+        return std::nullopt;
+    }
+    BoundString growValue(growId);
+    if (mysql_stmt_bind_param(stmt, &growValue.bind) != 0 || mysql_stmt_execute(stmt) != 0)
+    {
+        mysql_stmt_close(stmt);
+        return std::nullopt;
+    }
+    uint32_t id = 0;
+    char emailBuf[256] = {};
+    unsigned long emailLen = 0;
+    MYSQL_BIND out[2] = {};
+    out[0].buffer_type = MYSQL_TYPE_LONG;
+    out[0].buffer = &id;
+    out[0].is_unsigned = 1;
+    out[1].buffer_type = MYSQL_TYPE_STRING;
+    out[1].buffer = emailBuf;
+    out[1].buffer_length = sizeof(emailBuf) - 1;
+    out[1].length = &emailLen;
+    mysql_stmt_bind_result(stmt, out);
+
+    std::optional<std::pair<uint32_t, std::string>> result;
+    if (mysql_stmt_fetch(stmt) == 0)
+        result = std::make_pair(id, std::string(emailBuf, emailLen));
+    mysql_stmt_close(stmt);
+    return result;
+}
+
+bool Database::createResetCode(uint32_t playerId, const std::string& sixDigitCode, int ttlSeconds)
+{
+    // Codes are stored hashed; old codes for the player are invalidated.
+    if (!exec("DELETE FROM password_resets WHERE player_id=" + std::to_string(playerId)))
+        return false;
+    std::string hash = sha256Hex(sixDigitCode);
+    return exec("INSERT INTO password_resets (player_id, code_hash, expires_at) VALUES (" +
+                std::to_string(playerId) + ", '" +
+                escape(reinterpret_cast<const uint8_t*>(hash.data()), hash.size()) +
+                "', DATE_ADD(NOW(), INTERVAL " + std::to_string(ttlSeconds) + " SECOND))");
+}
+
+bool Database::consumeResetCode(uint32_t playerId, const std::string& sixDigitCode)
+{
+    if (!ensureConnection())
+        return false;
+    std::string sql = "SELECT code_hash FROM password_resets WHERE player_id=" + std::to_string(playerId) +
+                      " AND used=0 AND expires_at > NOW()";
+    if (mysql_query(m_handle, sql.c_str()) != 0)
+        return false;
+    MYSQL_RES* result = mysql_store_result(m_handle);
+    if (result == nullptr)
+        return false;
+    bool matched = false;
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != nullptr)
+    {
+        unsigned long* lengths = mysql_fetch_lengths(result);
+        if (row[0] == nullptr)
+            continue;
+        std::string stored(row[0], lengths[0]);
+        if (digestsEqual(sha256Hex(sixDigitCode), stored))
+        {
+            matched = true;
+            break;
+        }
+    }
+    mysql_free_result(result);
+    if (!matched)
+        return false;
+    std::string hash = sha256Hex(sixDigitCode);
+    return exec("UPDATE password_resets SET used=1 WHERE player_id=" + std::to_string(playerId) +
+                " AND code_hash='" +
+                escape(reinterpret_cast<const uint8_t*>(hash.data()), hash.size()) + "'");
+}
+
+bool Database::updatePassword(uint32_t playerId, const std::string& newPassword)
+{
+    unsigned char saltBytes[16] = {};
+    if (RAND_bytes(saltBytes, sizeof(saltBytes)) != 1)
+        return false;
+    std::ostringstream saltOut;
+    saltOut << std::hex;
+    for (unsigned char byte : saltBytes)
+    {
+        saltOut.width(2);
+        saltOut.fill('0');
+        saltOut << static_cast<int>(byte);
+    }
+    std::string hash = hashPassword(saltOut.str(), newPassword);
+    if (hash.empty())
+        return false;
+    std::string hashEsc = escape(reinterpret_cast<const uint8_t*>(hash.data()), hash.size());
+    return exec("UPDATE players SET pass_hash='" + hashEsc + "', salt='" + saltOut.str() + "' WHERE id=" +
+                std::to_string(playerId));
 }
 
 bool Database::setGems(uint32_t playerId, int gems)

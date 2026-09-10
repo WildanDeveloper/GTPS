@@ -46,6 +46,14 @@ public:
 
     bool connect(const DbConfig& config);
     bool isConnected() const { return m_handle != nullptr; }
+    void reset()
+    {
+        if (m_handle != nullptr)
+        {
+            mysql_close(m_handle);
+            m_handle = nullptr;
+        }
+    }
 
     // Returns the existing record when the password verifies, creates the
     // account with the default role otherwise. Empty optional on failure.
@@ -58,6 +66,16 @@ public:
     bool setGems(uint32_t playerId, int gems);
     std::optional<uint32_t> findPlayerId(const std::string& growId);
     std::optional<std::string> findPlayerById(uint32_t playerId);
+
+    // Web account management (register + password recovery).
+    enum class RegisterResult { Ok, Duplicate, Error };
+    RegisterResult registerPlayer(const std::string& growId, const std::string& password,
+                                  const std::string& email, int defaultRoleId);
+    // (player_id, email) — email empty when the account has none.
+    std::optional<std::pair<uint32_t, std::string>> getPlayerContact(const std::string& growId);
+    bool createResetCode(uint32_t playerId, const std::string& sixDigitCode, int ttlSeconds);
+    bool consumeResetCode(uint32_t playerId, const std::string& sixDigitCode);
+    bool updatePassword(uint32_t playerId, const std::string& newPassword);
 
     // Low-level helpers for binary-safe world storage.
     bool exec(const std::string& sql);

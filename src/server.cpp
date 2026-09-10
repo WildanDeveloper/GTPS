@@ -184,8 +184,27 @@ bool GameServer::start()
     logInfo("Listening for game clients on port " + std::to_string(m_config.bindPort));
 
     // In-process HTTPS login service (replaces the old Python backend).
-    m_login.start(m_config.resourcesDir, m_config.resourcesDir + "/certs/server.crt",
-                  m_config.resourcesDir + "/certs/server.key", m_config.loginHost, m_config.loginPort);
+    LoginConfig login;
+    login.resourcesDir = m_config.resourcesDir;
+    login.certFile = m_config.resourcesDir + "/certs/server.crt";
+    login.keyFile = m_config.resourcesDir + "/certs/server.key";
+    login.host = m_config.loginHost;
+    login.port = m_config.loginPort;
+    login.db = m_config.db;
+    const Role* defaultRole = m_roles.getDefaultRole();
+    login.defaultRoleId = defaultRole != nullptr ? defaultRole->id : 4;
+
+    // Optional Resend.com settings for password recovery emails.
+    Config resendConf;
+    if (resendConf.load(m_config.resourcesDir + "/resend.conf"))
+    {
+        login.resendApiKey = resendConf.get("api_key", "");
+        login.resendFrom = resendConf.get("from", login.resendFrom);
+        if (!login.resendApiKey.empty())
+            logInfo("Password recovery email enabled via Resend");
+    }
+
+    m_login.start(login);
     return true;
 }
 
