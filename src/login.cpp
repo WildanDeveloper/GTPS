@@ -6,17 +6,21 @@
 
 #include <netdb.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <mutex>
 #include <openssl/rand.h>
 #include <sstream>
 #include <unordered_map>
+
+#include "items.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -659,6 +663,130 @@ std::string generateStateToken()
 std::mutex g_stateMutex;
 std::map<std::string, std::chrono::steady_clock::time_point> g_oauthStates;
 
+// ---------------------------------------------------------------------------
+// Anti-brute-force guard
+// ---------------------------------------------------------------------------
+
+struct AttemptRecord
+{
+    int count{0};
+    std::chrono::steady_clock::time_point blockedUntil{};
+    std::chrono::steady_clock::time_point lastActivity{};
+};
+
+std::mutex g_guardMutex;
+std::unordered_map<std::string, AttemptRecord> g_attempts;
+constexpr int kFailThreshold = 5;
+constexpr long kBaseBlockSeconds = 300; // 5 minutes
+constexpr long kMaxBlockSeconds = 86400; // 24 hours
+
+namespace
+{
+
+std::chrono::steady_clock::time_point nowPoint()
+{
+    return std::chrono::steady_clock::now();
+}
+
+} // namespace
+
+// Returns seconds remaining while blocked, 0 when allowed.
+long guardCheck(const std::string& key)
+{
+    std::lock_guard<std::mutex> guard(g_guardMutex);
+    auto it = g_attempts.find(key);
+    if (it == g_attempts.end())
+        return 0;
+    long left = std::chrono::duration_cast<std::chrono::seconds>(it->second.blockedUntil - nowPoint()).count();
+    return left > 0 ? left : 0;
+}
+
+// Records a failure. Returns the number of seconds the key is now blocked
+// (0 = still allowed). Blocks escalate: the 5th failure blocks for 5
+// minutes, every further forced attempt doubles the remaining window
+// (capped at 24 hours).
+long guardFail(const std::string& key)
+{
+    std::lock_guard<std::mutex> guard(g_guardMutex);
+    auto now = nowPoint();
+    AttemptRecord& record = g_attempts[key];
+    record.lastActivity = now;
+    record.count += 1;
+    long blocked = std::chrono::duration_cast<std::chrono::seconds>(record.blockedUntil - now).count();
+    if (blocked > 0)
+    {
+        // Forced attempts during a block extend it (escalation, capped).
+        long extended = std::min(kMaxBlockSeconds, blocked + kBaseBlockSeconds);
+        record.blockedUntil = now + std::chrono::seconds(extended);
+        return extended;
+    }
+    if (record.count >= kFailThreshold)
+    {
+        long duration = std::min(kMaxBlockSeconds,
+                                 kBaseBlockSeconds << std::min(12, record.count - kFailThreshold));
+        record.blockedUntil = now + std::chrono::seconds(duration);
+        return duration;
+    }
+    return 0;
+}
+
+void guardClear(const std::string& key)
+{
+    std::lock_guard<std::mutex> guard(g_guardMutex);
+    g_attempts.erase(key);
+}
+
+void guardPrune()
+{
+    std::lock_guard<std::mutex> guard(g_guardMutex);
+    auto now = nowPoint();
+    for (auto it = g_attempts.begin(); it != g_attempts.end();)
+    {
+        // Forget entries idle for over an hour that are not actively
+        // blocking (fresh failure counters must survive!).
+        bool idle = now - it->second.lastActivity > std::chrono::hours(1);
+        if (idle && it->second.blockedUntil < now)
+            it = g_attempts.erase(it);
+        else
+            ++it;
+    }
+}
+
+// Resolved client IP: behind a local nginx proxy the forwarded header is
+// trusted; direct connections use the socket address.
+std::string resolveClientIp(const HttpRequest& request, const std::string& socketIp)
+{
+    if (socketIp == "127.0.0.1")
+    {
+        auto real = request.headers.find("x-real-ip");
+        if (real != request.headers.end() && !real->second.empty())
+            return real->second;
+        auto forwarded = request.headers.find("x-forwarded-for");
+        if (forwarded != request.headers.end() && !forwarded->second.empty())
+        {
+            std::string chain = forwarded->second;
+            auto comma = chain.find(',');
+            return comma == std::string::npos ? chain : chain.substr(0, comma);
+        }
+    }
+    return socketIp;
+}
+
+// Device fingerprint: hash of the identifying request headers.
+std::string fingerprintOf(const HttpRequest& request)
+{
+    std::string material = request.headers.count("user-agent") ? request.headers.at("user-agent") : "";
+    material.push_back('\n');
+    material += request.headers.count("accept-language") ? request.headers.at("accept-language") : "";
+    material.push_back('\n');
+    material += request.headers.count("accept-encoding") ? request.headers.at("accept-encoding") : "";
+    std::vector<uint8_t> bytes(material.begin(), material.end());
+    uint32_t hash = WildanDev::fnv1a32(bytes);
+    std::ostringstream out;
+    out << std::hex << std::setw(8) << std::setfill('0') << hash;
+    return out.str();
+}
+
 std::string resetCodeEmailHtml(const std::string& code)
 {
     return pageShell(
@@ -786,9 +914,11 @@ void LoginService::serve(ssl_ctx_st* ctxPtr)
             continue;
         }
         SSL_set_fd(ssl, fd);
-        std::thread([ssl, this]() {
+        std::string clientIp(16, 0);
+        inet_ntop(AF_INET, &client.sin_addr, clientIp.data(), clientIp.size());
+        std::thread([ssl, this, clientIp]() {
             if (SSL_accept(ssl) == 1)
-                this->handleConnection(ssl);
+                this->handleConnection(ssl, clientIp);
             else
             {
                 SSL_free(ssl);
@@ -799,7 +929,7 @@ void LoginService::serve(ssl_ctx_st* ctxPtr)
     // hold SSL objects derived from it; stop() only runs at shutdown.
 }
 
-void LoginService::handleConnection(SSL* ssl)
+void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
 {
     HttpRequest request;
     if (!readRequest(ssl, request))
@@ -863,6 +993,44 @@ void LoginService::handleConnection(SSL* ssl)
         std::string password = fields.count("password") ? fields["password"] : "";
         std::string password2 = fields.count("password2") ? fields["password2"] : "";
         std::string email = fields.count("email") ? fields["email"] : "";
+        std::string ip = resolveClientIp(request, socketIp);
+
+        // One registration per minute per IP, two accounts per IP lifetime.
+        bool registerThrottled = false;
+        {
+            std::lock_guard<std::mutex> guard(g_throttleMutex);
+            auto now = std::chrono::steady_clock::now();
+            auto& last = g_resetThrottle["reg:" + ip];
+            if (now - last < std::chrono::seconds(60))
+                registerThrottled = true;
+            else
+                last = now;
+        }
+        int accountsOnIp = 0;
+        {
+            std::lock_guard<std::mutex> guard(m_dbMutex);
+            accountsOnIp = m_database.countByRegIp(ip);
+        }
+        if (registerThrottled)
+        {
+            sendResponse(ssl, 200, "OK", "text/html",
+                         registerPage("Please wait a minute before creating another account.", true,
+                                      !m_config.googleClientId.empty()));
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            return;
+        }
+        if (accountsOnIp >= 2)
+        {
+            logWarn("Registration blocked for " + ip + " (" + std::to_string(accountsOnIp) +
+                    " accounts already registered from this IP)");
+            sendResponse(ssl, 200, "OK", "text/html",
+                         registerPage("Account limit reached for this network (max 2).", true,
+                                      !m_config.googleClientId.empty()));
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            return;
+        }
 
         const char* error = nullptr;
         if (!validGrowId(grow))
@@ -881,7 +1049,7 @@ void LoginService::handleConnection(SSL* ssl)
         else
         {
             std::lock_guard<std::mutex> guard(m_dbMutex);
-            auto result = m_database.registerPlayer(grow, password, email, m_config.defaultRoleId);
+            auto result = m_database.registerPlayer(grow, password, email, m_config.defaultRoleId, ip);
             if (result == Database::RegisterResult::Duplicate)
                 sendResponse(ssl, 200, "OK", "text/html",
                              registerPage("That username is already taken.", true,
@@ -1030,7 +1198,32 @@ void LoginService::handleConnection(SSL* ssl)
         std::string grow = fields.count("growId") ? fields["growId"] : "";
         std::string password = fields.count("password") ? fields["password"] : "";
         std::string token = fields.count("_token") ? fields["_token"] : "";
-        if (grow.empty() || password.empty())
+
+        std::string ip = resolveClientIp(request, socketIp);
+        std::string fp = fingerprintOf(request);
+        std::string userKey = "u:" + grow + "|" + ip;
+        std::string fpKey = "f:" + grow + "|" + fp;
+        std::string ipKey = "i:" + ip;
+        guardPrune();
+
+        auto blockedJson = [](long seconds) {
+            long minutes = (seconds + 59) / 60;
+            return "{\"status\":\"error\",\"message\":\"Too many failed attempts. Try again in " +
+                   std::to_string(minutes) + " minute(s).\"}";
+        };
+
+        long wait = std::max({guardCheck(userKey), guardCheck(fpKey)});
+        if (wait > 0)
+        {
+            // Forced attempts during a block escalate the penalty.
+            guardFail(userKey);
+            guardFail(fpKey);
+            long escalated = std::max({guardCheck(userKey), guardCheck(fpKey)});
+            logWarn("Rate-limited login for '" + grow + "' from " + ip + " (fp " + fp + ", " +
+                    std::to_string(escalated) + "s left)");
+            sendResponse(ssl, 429, "Too Many Requests", "application/json", blockedJson(escalated));
+        }
+        else if (grow.empty() || password.empty())
         {
             sendResponse(ssl, 400, "Bad Request", "application/json",
                          "{\"status\":\"error\",\"message\":\"growId/password required\"}");
@@ -1049,17 +1242,54 @@ void LoginService::handleConnection(SSL* ssl)
         }
         else
         {
-            std::string account =
-                Base64::encode("_token=" + token + "&growId=" + grow + "&password=" + password);
+            // Verify the credentials here so failures can be counted; the
+            // game server re-verifies on connect (defense in depth).
+            Database::LoginCheck check;
             {
-                std::lock_guard<std::mutex> guard(g_issuedMutex);
-                g_issuedTokens[account] = {grow, password};
+                std::lock_guard<std::mutex> guard(m_dbMutex);
+                check = m_database.verifyLogin(grow, password);
             }
-            std::string body = "{\"status\":\"success\",\"message\":\"Account Validated.\",\"token\":\"" +
-                               jsonEscape(account) + "\",\"url\":\"\",\"accountType\":\"growtopia\"}";
-            sendResponse(ssl, 200, "OK", "application/json", body,
-                         {"Set-Cookie: gtps_token=" + account + "; Path=/; HttpOnly; Secure",
-                          "Set-Cookie: growId=" + grow + "; Path=/; HttpOnly; Secure"});
+            if (check == Database::LoginCheck::Ok)
+            {
+                guardClear(userKey);
+                guardClear(fpKey);
+                std::string account =
+                    Base64::encode("_token=" + token + "&growId=" + grow + "&password=" + password);
+                {
+                    std::lock_guard<std::mutex> guard(g_issuedMutex);
+                    g_issuedTokens[account] = {grow, password};
+                }
+                std::string body =
+                    "{\"status\":\"success\",\"message\":\"Account Validated.\",\"token\":\"" +
+                    jsonEscape(account) + "\",\"url\":\"\",\"accountType\":\"growtopia\"}";
+                sendResponse(ssl, 200, "OK", "application/json", body,
+                             {"Set-Cookie: gtps_token=" + account + "; Path=/; HttpOnly; Secure",
+                              "Set-Cookie: growId=" + grow + "; Path=/; HttpOnly; Secure"});
+            }
+            else if (check == Database::LoginCheck::Banned)
+            {
+                sendResponse(ssl, 403, "Forbidden", "application/json",
+                             "{\"status\":\"error\",\"message\":\"This account is banned.\"}");
+            }
+            else if (check == Database::LoginCheck::Error)
+            {
+                sendResponse(ssl, 500, "Internal Server Error", "application/json",
+                             "{\"status\":\"error\",\"message\":\"Server error, try again.\"}");
+            }
+            else
+            {
+                // Wrong username or password: count against the account+IP,
+                // the fingerprint, and the IP-wide budget.
+                long userBlock = guardFail(userKey);
+                guardFail(fpKey);
+                guardFail(ipKey);
+                logWarn("Failed login for '" + grow + "' from " + ip + " (fp " + fp + ")" +
+                        (userBlock > 0 ? " — rate limited " + std::to_string(userBlock) + "s" : ""));
+                sendResponse(ssl, 401, "Unauthorized", "application/json",
+                             userBlock > 0 ? blockedJson(userBlock)
+                                           : "{\"status\":\"error\",\"message\":\"Wrong username or "
+                                             "password.\"}");
+            }
         }
     }
     else if (path == "/player/auth/google" && !isPost)
@@ -1263,7 +1493,9 @@ void LoginService::handleConnection(SSL* ssl)
                         unique = candidate + std::to_string(i);
                     if (unique.size() > 32)
                         unique = unique.substr(0, 32);
-                    auto created = m_database.registerGooglePlayer(unique, sub, email, m_config.defaultRoleId);
+                    auto created = m_database.registerGooglePlayer(unique, sub, email,
+                                                                   m_config.defaultRoleId,
+                                                                   resolveClientIp(request, socketIp));
                     if (created == Database::RegisterResult::Ok)
                     {
                         if (auto row = m_database.findPlayerId(unique))

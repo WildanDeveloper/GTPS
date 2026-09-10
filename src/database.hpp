@@ -71,7 +71,7 @@ public:
     // Web account management (register + password recovery).
     enum class RegisterResult { Ok, Duplicate, Error };
     RegisterResult registerPlayer(const std::string& growId, const std::string& password,
-                                  const std::string& email, int defaultRoleId);
+                                  const std::string& email, int defaultRoleId, const std::string& regIp);
     // (player_id, email) — email empty when the account has none.
     std::optional<std::pair<uint32_t, std::string>> getPlayerContact(const std::string& growId);
     bool createResetCode(uint32_t playerId, const std::string& sixDigitCode, int ttlSeconds);
@@ -85,7 +85,12 @@ public:
     bool setGoogleSub(uint32_t playerId, const std::string& sub);
     bool growIdExists(const std::string& growId);
     RegisterResult registerGooglePlayer(const std::string& growId, const std::string& sub,
-                                        const std::string& email, int defaultRoleId);
+                                        const std::string& email, int defaultRoleId, const std::string& regIp);
+
+    // Pure credential check (no side effects) used by the web anti-brute-force.
+    enum class LoginCheck { Ok, NoSuchUser, BadPassword, Banned, Error };
+    LoginCheck verifyLogin(const std::string& growId, const std::string& password);
+    int countByRegIp(const std::string& regIp);
 
     // Low-level helpers for binary-safe world storage.
     bool exec(const std::string& sql);

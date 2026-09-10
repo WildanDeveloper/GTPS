@@ -174,6 +174,9 @@ bool Database::ensureSchema()
     if (!columnExists("players", "google_sub") &&
         !exec("ALTER TABLE players ADD COLUMN google_sub VARCHAR(64) NULL DEFAULT NULL"))
         return false;
+    if (!columnExists("players", "reg_ip") &&
+        !exec("ALTER TABLE players ADD COLUMN reg_ip VARCHAR(45) NULL DEFAULT NULL"))
+        return false;
     if (!exec("CREATE TABLE IF NOT EXISTS password_resets ("
               "player_id INT UNSIGNED NOT NULL,"
               "code_hash CHAR(64) NOT NULL,"
@@ -673,7 +676,8 @@ std::optional<std::string> Database::findPlayerById(uint32_t playerId)
 }
 
 Database::RegisterResult Database::registerPlayer(const std::string& growId, const std::string& password,
-                                                  const std::string& email, int defaultRoleId)
+                                                  const std::string& email, int defaultRoleId,
+                                                  const std::string& regIp)
 {
     if (!ensureConnection())
         return RegisterResult::Error;
@@ -698,7 +702,7 @@ Database::RegisterResult Database::registerPlayer(const std::string& growId, con
     if (stmt == nullptr)
         return RegisterResult::Error;
     constexpr char kInsert[] =
-        "INSERT INTO players (growid, pass_hash, salt, role_id, email) VALUES (?, ?, ?, ?, ?)";
+        "INSERT INTO players (growid, pass_hash, salt, role_id, email, reg_ip) VALUES (?, ?, ?, ?, ?, ?)";
     if (mysql_stmt_prepare(stmt, kInsert, std::strlen(kInsert)) != 0)
     {
         mysql_stmt_close(stmt);
@@ -707,7 +711,9 @@ Database::RegisterResult Database::registerPlayer(const std::string& growId, con
     BoundString growValue(growId), hashValue(hash), saltValue(salt);
     BoundInt roleValue(defaultRoleId);
     BoundString emailValue(email); // empty string = no email on file
-    MYSQL_BIND in[5] = {growValue.bind, hashValue.bind, saltValue.bind, roleValue.bind, emailValue.bind};
+    BoundString regIpValue(regIp);
+    MYSQL_BIND in[6] = {growValue.bind, hashValue.bind, saltValue.bind, roleValue.bind, emailValue.bind,
+                        regIpValue.bind};
     bool ok = mysql_stmt_bind_param(stmt, in) == 0 && mysql_stmt_execute(stmt) == 0;
     bool duplicate = mysql_stmt_errno(stmt) == 1062;
     mysql_stmt_close(stmt);
@@ -910,7 +916,8 @@ bool Database::growIdExists(const std::string& growId)
 }
 
 Database::RegisterResult Database::registerGooglePlayer(const std::string& growId, const std::string& sub,
-                                                        const std::string& email, int defaultRoleId)
+                                                        const std::string& email, int defaultRoleId,
+                                                        const std::string& regIp)
 {
     if (!ensureConnection())
         return RegisterResult::Error;
@@ -934,7 +941,8 @@ Database::RegisterResult Database::registerGooglePlayer(const std::string& growI
     if (stmt == nullptr)
         return RegisterResult::Error;
     constexpr char kInsert[] =
-        "INSERT INTO players (growid, pass_hash, salt, role_id, email, google_sub) VALUES (?, ?, ?, ?, ?, ?)";
+        "INSERT INTO players (growid, pass_hash, salt, role_id, email, google_sub, reg_ip) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)";
     if (mysql_stmt_prepare(stmt, kInsert, std::strlen(kInsert)) != 0)
     {
         mysql_stmt_close(stmt);
@@ -942,15 +950,130 @@ Database::RegisterResult Database::registerGooglePlayer(const std::string& growI
     }
     BoundString growValue(growId), hashValue(hash), saltValue(saltOut.str());
     BoundInt roleValue(defaultRoleId);
-    BoundString emailValue(email), subValue(sub);
-    MYSQL_BIND in[6] = {growValue.bind, hashValue.bind, saltValue.bind, roleValue.bind, emailValue.bind,
-                        subValue.bind};
+    BoundString emailValue(email), subValue(sub), regIpValue(regIp);
+    MYSQL_BIND in[7] = {growValue.bind, hashValue.bind, saltValue.bind, roleValue.bind, emailValue.bind,
+                        subValue.bind, regIpValue.bind};
     bool ok = mysql_stmt_bind_param(stmt, in) == 0 && mysql_stmt_execute(stmt) == 0;
     bool duplicate = mysql_stmt_errno(stmt) == 1062;
     mysql_stmt_close(stmt);
     if (!ok)
         return duplicate ? RegisterResult::Duplicate : RegisterResult::Error;
     return RegisterResult::Ok;
+}
+
+Database::LoginCheck Database::verifyLogin(const std::string& growId, const std::string& password)
+{
+    if (!ensureConnection())
+        return LoginCheck::Error;
+    MYSQL_STMT* stmt = mysql_stmt_init(m_handle);
+    if (stmt == nullptr)
+        return LoginCheck::Error;
+    constexpr char kSelect[] =
+        "SELECT id, pass_hash, salt, is_banned FROM players WHERE growid = ? LIMIT 1";
+    if (mysql_stmt_prepare(stmt, kSelect, std::strlen(kSelect)) != 0)
+    {
+        mysql_stmt_close(stmt);
+        return LoginCheck::Error;
+    }
+    BoundString growValue(growId);
+    if (mysql_stmt_bind_param(stmt, &growValue.bind) != 0 || mysql_stmt_execute(stmt) != 0)
+    {
+        mysql_stmt_close(stmt);
+        return LoginCheck::Error;
+    }
+
+    uint32_t foundId = 0;
+    char hashBuf[256] = {};
+    char saltBuf[256] = {};
+    char foundBanned = 0;
+    unsigned long hashLen = 0, saltLen = 0;
+    MYSQL_BIND out[4] = {};
+    out[0].buffer_type = MYSQL_TYPE_LONG;
+    out[0].buffer = &foundId;
+    out[0].is_unsigned = 1;
+    out[1].buffer_type = MYSQL_TYPE_STRING;
+    out[1].buffer = hashBuf;
+    out[1].buffer_length = sizeof(hashBuf) - 1;
+    out[1].length = &hashLen;
+    out[2].buffer_type = MYSQL_TYPE_STRING;
+    out[2].buffer = saltBuf;
+    out[2].buffer_length = sizeof(saltBuf) - 1;
+    out[2].length = &saltLen;
+    out[3].buffer_type = MYSQL_TYPE_TINY;
+    out[3].buffer = &foundBanned;
+    mysql_stmt_bind_result(stmt, out);
+
+    int fetchStatus = mysql_stmt_fetch(stmt);
+    mysql_stmt_close(stmt);
+    if (fetchStatus != 0)
+        return LoginCheck::NoSuchUser;
+
+    std::string storedHash(hashBuf, hashLen);
+    std::string storedSalt(saltBuf, saltLen);
+    if (storedHash.empty())
+        return LoginCheck::Error;
+
+    bool verified = false;
+    if (storedHash.rfind("pbkdf2_sha256$", 0) == 0)
+    {
+        auto first = storedHash.find('$', 14);
+        auto second = first == std::string::npos ? std::string::npos : storedHash.find('$', first + 1);
+        if (first != std::string::npos && second != std::string::npos)
+        {
+            std::string saltHex = storedHash.substr(first + 1, second - first - 1);
+            std::string expected = storedHash.substr(second + 1);
+            std::string computed = hashPassword(saltHex, password);
+            verified = !computed.empty() && computed.rfind('$') != std::string::npos &&
+                       digestsEqual(computed.substr(computed.rfind('$') + 1), expected);
+        }
+    }
+    else
+    {
+        verified = digestsEqual(sha256Hex(storedSalt + password), storedHash);
+        if (verified)
+        {
+            std::string upgraded = hashPasswordRaw(storedSalt, password);
+            if (!upgraded.empty())
+            {
+                exec("UPDATE players SET pass_hash='" +
+                     escape(reinterpret_cast<const uint8_t*>(upgraded.data()), upgraded.size()) +
+                     "' WHERE id=" + std::to_string(foundId));
+            }
+        }
+    }
+    if (!verified)
+        return LoginCheck::BadPassword;
+    if (foundBanned != 0)
+        return LoginCheck::Banned;
+    return LoginCheck::Ok;
+}
+
+int Database::countByRegIp(const std::string& regIp)
+{
+    MYSQL_STMT* stmt = mysql_stmt_init(m_handle);
+    if (stmt == nullptr)
+        return -1;
+    constexpr char kSelect[] = "SELECT COUNT(*) FROM players WHERE reg_ip = ?";
+    if (mysql_stmt_prepare(stmt, kSelect, std::strlen(kSelect)) != 0)
+    {
+        mysql_stmt_close(stmt);
+        return -1;
+    }
+    BoundString ipValue(regIp);
+    if (mysql_stmt_bind_param(stmt, &ipValue.bind) != 0 || mysql_stmt_execute(stmt) != 0)
+    {
+        mysql_stmt_close(stmt);
+        return -1;
+    }
+    int count = 0;
+    MYSQL_BIND out{};
+    out.buffer_type = MYSQL_TYPE_LONG;
+    out.buffer = &count;
+    mysql_stmt_bind_result(stmt, &out);
+    if (mysql_stmt_fetch(stmt) != 0)
+        count = -1;
+    mysql_stmt_close(stmt);
+    return count;
 }
 
 bool Database::updatePassword(uint32_t playerId, const std::string& newPassword)

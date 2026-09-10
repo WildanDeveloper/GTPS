@@ -58,7 +58,7 @@ public:
 
 private:
     void serve(ssl_ctx_st* ctx);
-    void handleConnection(ssl_st* ssl);
+    void handleConnection(ssl_st* ssl, const std::string& socketIp);
 
     int m_listenFd{-1};
     std::thread m_thread;
