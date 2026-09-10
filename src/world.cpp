@@ -160,6 +160,20 @@ void WorldManager::applyTiles(World& world, const std::vector<uint8_t>& blob)
     }
 }
 
+void WorldManager::replace(const std::string& name, World&& world)
+{
+    auto it = m_worlds.find(name);
+    if (it != m_worlds.end())
+    {
+        world.visitorCount = it->second.visitorCount;
+        world.nextNetId = it->second.nextNetId;
+        // Re-point every visitor's world name (unchanged) and swap state.
+        m_worlds.erase(it);
+    }
+    world.dirty = true;
+    m_worlds.emplace(name, std::move(world));
+}
+
 void WorldManager::saveDirty()
 {
     for (auto& [name, world] : m_worlds)

@@ -1021,6 +1021,13 @@ void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
     else if (path.size() >= 26 && path.compare(path.size() - 26, 26, "/growtopia/server_data.php") == 0)
     {
         std::string content = readFileOrEmpty(m_config.resourcesDir + "/server_data.txt");
+        // Maintenance flag: replace the payload with a #maint block.
+        if (!readFileOrEmpty(m_config.resourcesDir + "/maintenance").empty())
+        {
+            content = "server|34.101.165.90\nport|17091\ntype|1\ntype2|1\n"
+                      "#maint|WildanDev GTPS is under maintenance. Come back later!\n"
+                      "loginurl|gt.wildandev.tech\nmeta|WildanDev\nRTENDMARKERBS1001\n";
+        }
         if (content.empty())
             sendResponse(ssl, 500, "Internal Server Error", "text/plain", "server_data unavailable");
         else

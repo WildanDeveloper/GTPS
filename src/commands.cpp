@@ -480,6 +480,66 @@ void GameServer::registerBuiltinCommands()
                                       sendStoreDialog(session);
                               }});
 
+    registerCommand("nuke", {"command.nuke", "/nuke",
+                             [this](Session& session, const std::vector<std::string>& args) {
+                                 (void)args;
+                                 if (session.worldName.empty())
+                                 {
+                                     sendConsoleMessage(session.peer, "Join a world first.");
+                                     return;
+                                 }
+                                 World& world = m_worlds.getOrCreate(session.worldName);
+                                 for (auto& [peer, candidate] : m_sessions)
+                                 {
+                                     if (candidate.worldName != world.name)
+                                         continue;
+                                     sendConsoleMessage(peer, "`4This world is being nuked by " +
+                                                                  session.growId + "!");
+                                 }
+                                 World fresh;
+                                 fresh.name = world.name;
+                                 fresh.ownerId = world.ownerId;
+                                 fresh.isPublic = world.isPublic;
+                                 m_worlds.replace(world.name, std::move(fresh));
+                                 // Force everyone out; the world regenerates on rejoin.
+                                 for (auto& [peer, candidate] : m_sessions)
+                                 {
+                                     if (candidate.worldName != world.name)
+                                         continue;
+                                     sendVariant(peer, {VariantValue::makeString("OnRemove"),
+                                                        VariantValue::makeString("netID|" +
+                                                                                 std::to_string(candidate.netId) +
+                                                                                 "\n")},
+                                                 candidate.netId);
+                                     candidate.worldName.clear();
+                                     candidate.netId = 0;
+                                 }
+                                 logInfo(session.growId + " nuked world " + world.name);
+                             }});
+
+    registerCommand("maintenance", {"command.nuke", "/maintenance <on|off>",
+                                    [this](Session& session, const std::vector<std::string>& args) {
+                                        if (args.empty() || (args[0] != "on" && args[0] != "off"))
+                                        {
+                                            sendConsoleMessage(session.peer,
+                                                                "Usage: /maintenance <on|off>");
+                                            return;
+                                        }
+                                        bool on = args[0] == "on";
+                                        std::ofstream file("resources/maintenance",
+                                                           std::ios::trunc);
+                                        if (on)
+                                            file << "1";
+                                        file.close();
+                                        if (!on)
+                                            std::remove("resources/maintenance");
+                                        std::string text = on ? "`4Server maintenance ENABLED.`` New "
+                                                                "logins will see the maintenance page."
+                                                              : "`2Server maintenance DISABLED.``";
+                                        sendConsoleMessage(session.peer, text);
+                                        logInfo(session.growId + " set maintenance " + args[0]);
+                                    }});
+
     // Growmoji emotes: /wl, /love, /troll, ... show the glyph in a bubble.
     for (const auto& [name, glyph] : kEmoteGlyphs)
     {

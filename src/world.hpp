@@ -105,6 +105,7 @@ public:
     explicit WorldManager(Database& database) : m_database(database) {}
 
     World& getOrCreate(const std::string& name);
+    void replace(const std::string& name, World&& world);
     void saveDirty();
     void saveAll();
     // Drops worlds nobody is visiting and without unsaved changes, so a

@@ -1154,7 +1154,9 @@ void GameServer::sendSpawn(ENetPeer* peer, const Session& subject, bool local)
     if (local)
         text += "type|local\n";
 
-    sendVariant(peer, {VariantValue::makeString("OnSpawn"), VariantValue::makeString(text)});
+    // Delay -1 (0xFFFFFFFF) is REQUIRED for OnSpawn: a zero delay makes the
+    // client reset the local avatar (falls from the top of the world).
+    sendVariant(peer, {VariantValue::makeString("OnSpawn"), VariantValue::makeString(text)}, -1, -1);
 }
 
 void GameServer::broadcastToWorld(const World& world, const std::vector<uint8_t>& raw, ENetPeer* except)
@@ -1398,9 +1400,13 @@ void GameServer::leaveWorld(Session& session)
 void GameServer::sendObjectState(const World& world, int32_t marker, uint32_t uid, int itemId, int count,
                                  float x, float y)
 {
+    // Drop packets ride ENet channel 1 (reference behavior). Field semantics:
+    //   add:    netid = -1 (or dropper), uid = object uid, id = item id
+    //   merge:  netid = -3, uid = object uid, id = item id
+    //   remove: netid = collector, uid = 0, id = OBJECT UID
     TankHeader header;
     header.type = 0x0E; // PACKET_ITEM_CHANGE_OBJECT
-    header.netId = marker; // 0xFFFFFFFF new object, 0xFFFFFFFD merged, player netId = removed.
+    header.netId = marker;
     header.uid = uid;
     header.count = static_cast<float>(count);
     header.id = itemId;
@@ -1413,7 +1419,7 @@ void GameServer::sendObjectState(const World& world, int32_t marker, uint32_t ui
         if (candidate.worldName != world.name)
             continue;
         ENetPacket* packet = enet_packet_create(data.data(), data.size(), ENET_PACKET_FLAG_RELIABLE);
-        if (enet_peer_send(peer, 0, packet) != 0)
+        if (enet_peer_send(peer, 1, packet) != 0)
             enet_packet_destroy(packet);
     }
 }
@@ -1456,7 +1462,8 @@ void GameServer::removeDropObject(World& world, Session& collector, uint32_t uid
     {
         if (it->uid != uid)
             continue;
-        sendObjectState(world, collector.netId, uid, it->id, 0, it->x, it->y);
+        // Removal: the object uid travels in the ID field, UID field = 0.
+        sendObjectState(world, collector.netId, 0, static_cast<int>(it->uid), 0, it->x, it->y);
         world.objects.erase(it);
         world.dirty = true;
         return;
@@ -1953,6 +1960,7 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
             if (object.id == kGemsItemId)
             {
                 session.gems += object.count;
+                m_database.setGems(session.playerId, session.gems);
                 sendVariant(session.peer,
                             {VariantValue::makeString("OnSetBux"), VariantValue::makeInt(session.gems),
                              VariantValue::makeInt(1), VariantValue::makeInt(1)});
@@ -1979,6 +1987,7 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
                 }
                 int collected = std::min(space, object.count);
                 giveItem(session, object.id, collected);
+                sendInventoryState(session); // full inventory resend (reference)
                 const ItemDef* def = findItemById(object.id);
                 std::string name = def != nullptr ? def->name : std::to_string(object.id);
                 sendConsoleMessage(session.peer,
@@ -2113,58 +2122,75 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
         if (heldId == kFistItemId)
         {
             // Punching the main door respawns the player at it (real GT
-            // behaviour). Punching bedrock does nothing.
+            // behaviour).
             if (tile.fg == kMainDoorItemId)
             {
                 respawnPlayer(session);
                 return;
             }
-            if (tile.fg == 0)
+
+            // Empty foreground: punch the BACKGROUND instead (reference
+            // behavior — background breaking uses its own hit counter).
+            bool isBackground = false;
+            int16_t targetId = tile.fg;
+            if (targetId == 0)
+            {
+                if (tile.bg == 0)
+                    return;
+                targetId = tile.bg;
+                isBackground = true;
+            }
+
+            const ItemDef* target = findItemById(targetId);
+            int needed = target != nullptr && target->hits > 0 ? target->hits : 4;
+            // Bedrock-class blocks are unbreakable — except for staff.
+            if (!staff && (target == nullptr || target->hits == 0 || targetId == kBedrockItemId))
                 return;
-            const ItemDef* target = findItemById(tile.fg);
-            if (target != nullptr && target->hits == 0)
-                return; // unbreakable (bedrock, doors...)
+            if (staff && targetId == kBedrockItemId)
+                needed = 4; // staff breaks bedrock quickly
 
             // Track punch damage in memory (resets after 10 idle seconds).
+            // Foreground and background keep separate counters.
             long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::steady_clock::now().time_since_epoch())
                                   .count();
-            int tileIndex = punchY * kWorldWidth + punchX;
-            auto dmg = world.damage.find(tileIndex);
+            int tileKey = punchY * kWorldWidth + punchX;
+            if (isBackground)
+                tileKey += 1000000;
+            auto dmg = world.damage.find(tileKey);
             if (dmg == world.damage.end())
-                dmg = world.damage.emplace(tileIndex, std::make_pair(0, nowMs)).first;
+                dmg = world.damage.emplace(tileKey, std::make_pair(0, nowMs)).first;
             if (nowMs - dmg->second.second > 10000)
                 dmg->second.first = 0;
             dmg->second.second = nowMs;
             dmg->second.first += 1;
             int hits = dmg->second.first;
-            int needed = target != nullptr ? target->hits : 4;
 
-            // Broadcast the visual damage: (damage << 24) | 0x08, id=6.
+            // Damage animation: plain type 8 with id=6 (the client counts
+            // hits itself from repeated packets).
             {
-                std::vector<uint8_t> dmg(data, data + length);
-                if (dmg.size() >= 28)
+                std::vector<uint8_t> dmgPkt(data, data + length);
+                if (dmgPkt.size() >= 28)
                 {
-                    dmg[24] = 6; // id field = 6 (reference tile_apply_damage)
-                    dmg[25] = 0;
-                    dmg[26] = 0;
-                    dmg[27] = 0;
-                    auto writeI32 = [&dmg](std::size_t offset, int32_t value) {
-                        dmg[offset] = static_cast<uint8_t>(value & 0xFF);
-                        dmg[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
-                        dmg[offset + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
-                        dmg[offset + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+                    dmgPkt[24] = 6;
+                    dmgPkt[25] = 0;
+                    dmgPkt[26] = 0;
+                    dmgPkt[27] = 0;
+                    auto writeI32 = [&dmgPkt](std::size_t offset, int32_t value) {
+                        dmgPkt[offset] = static_cast<uint8_t>(value & 0xFF);
+                        dmgPkt[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+                        dmgPkt[offset + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+                        dmgPkt[offset + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
                     };
-                    writeI32(4, static_cast<int32_t>((hits << 24) | 0x08));
+                    writeI32(4, 8);
                     writeI32(8, session.netId);
                     writeI32(12, static_cast<int32_t>(session.playerId));
-                    World& w = world;
                     for (auto& [peer, candidate] : m_sessions)
                     {
-                        if (candidate.worldName != w.name)
+                        if (candidate.worldName != world.name)
                             continue;
                         ENetPacket* packet =
-                            enet_packet_create(dmg.data(), dmg.size(), ENET_PACKET_FLAG_RELIABLE);
+                            enet_packet_create(dmgPkt.data(), dmgPkt.size(), ENET_PACKET_FLAG_RELIABLE);
                         if (enet_peer_send(peer, 0, packet) != 0)
                             enet_packet_destroy(packet);
                     }
@@ -2174,14 +2200,19 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
             if (hits < needed)
                 return;
             world.damage.erase(dmg);
-            int16_t broken = tile.fg;
-            tile.fg = 0;
-            tile.state[2] = 0;
+            int16_t broken = targetId;
+            if (isBackground)
+                tile.bg = 0;
+            else
+            {
+                tile.fg = 0;
+                tile.state[2] = 0;
+            }
             world.dirty = true;
 
-            // Explicit break: tile-change packet + empty tile update so the
-            // client always renders the break (its own hit counting is not
-            // relied upon).
+            // Explicit break: tile-change packet + tile update so the client
+            // always renders the break (its own hit counting is not relied
+            // upon).
             {
                 std::vector<uint8_t> brk(data, data + length);
                 if (brk.size() >= 56)
@@ -2209,21 +2240,31 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
                 sendTileUpdate(world, punchX, punchY);
             }
 
-            // Real GT drops: gems always (small amounts), block and seed by
-            // rarity-based chance.
+            // Drops: gems (rarity table), block and seed by rarity-based
+            // chance. Background tiles drop themselves.
             int rarity = target != nullptr ? target->rarity : 1;
-            int blockChance = rarity > 1 ? 4 : 8;
-            int seedChance = rarity > 1 ? 2 : 4;
-            if (sharedRng()() % 20 == 0)
-                dropObject(world, kGemsItemId, 10, punchX, punchY);
-            else if (sharedRng()() % 4 == 0)
-                dropObject(world, kGemsItemId, 5, punchX, punchY);
-            else
-                dropObject(world, kGemsItemId, 1, punchX, punchY);
-            if (static_cast<int>(sharedRng()() % blockChance) == 0)
-                dropObject(world, broken, 1, punchX, punchY);
-            if (broken > 0 && static_cast<int>(sharedRng()() % seedChance) == 0)
-                dropObject(world, broken + 1, 1, punchX, punchY);
+            int rarityToGem = rarity >= 87 ? 22 : rarity >= 68 ? 18 : rarity >= 53 ? 14
+                                            : rarity >= 41 ? 11
+                                            : rarity >= 36 ? 10
+                                            : rarity >= 32 ? 9
+                                            : rarity >= 24 ? 5
+                                                           : 1;
+            if (static_cast<int>(sharedRng()() % (rarityToGem > 1 ? 1 : 4)) == 0)
+            {
+                int gems = 1 + static_cast<int>(sharedRng()() % rarityToGem);
+                for (int i : {10, 5, 1})
+                    for (; gems >= i; gems -= i)
+                        dropObject(world, kGemsItemId, i, punchX, punchY);
+            }
+            if (!isBackground)
+            {
+                if (static_cast<int>(sharedRng()() % (rarity > 1 ? 2 : 4)) == 0)
+                    dropObject(world, broken + 1, 1, punchX, punchY); // seed
+                else if (static_cast<int>(sharedRng()() % (rarity > 1 ? 4 : 8)) == 0)
+                    dropObject(world, broken, 1, punchX, punchY); // block
+            }
+            else if (static_cast<int>(sharedRng()() % 4) == 0)
+                dropObject(world, broken, 1, punchX, punchY); // bg drops itself
             return;
         }
 

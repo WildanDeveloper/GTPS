@@ -29,3 +29,6 @@ __pycache__/
 resources/resend.conf
 # Google OAuth
 resources/google.conf
+
+# maintenance flag
+resources/maintenance
