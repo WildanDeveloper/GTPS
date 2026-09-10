@@ -809,6 +809,24 @@ std::string resolveClientIp(const HttpRequest& request, const std::string& socke
     return socketIp;
 }
 
+std::string htmlEscape(const std::string& text)
+{
+    std::string out;
+    out.reserve(text.size());
+    for (char c : text)
+    {
+        switch (c)
+        {
+        case '&': out += "&amp;"; break;
+        case '<': out += "&lt;"; break;
+        case '>': out += "&gt;"; break;
+        case '"': out += "&quot;"; break;
+        default: out.push_back(c);
+        }
+    }
+    return out;
+}
+
 // The Growtopia client loads these pages inside an Android WebView; its
 // user agent carries the "; wv)" marker. Regular browsers do not.
 bool isClientWebView(const HttpRequest& request)
@@ -962,8 +980,9 @@ void LoginService::serve(ssl_ctx_st* ctxPtr)
             continue;
         }
         SSL_set_fd(ssl, fd);
-        std::string clientIp(16, 0);
-        inet_ntop(AF_INET, &client.sin_addr, clientIp.data(), clientIp.size());
+        char ipBuf[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &client.sin_addr, ipBuf, sizeof(ipBuf));
+        std::string clientIp(ipBuf);
         std::thread([ssl, this, clientIp]() {
             if (SSL_accept(ssl) == 1)
                 this->handleConnection(ssl, clientIp);
@@ -1108,19 +1127,25 @@ void LoginService::handleConnection(SSL* ssl, const std::string& socketIp)
                                           !m_config.googleClientId.empty()));
             else if (isClientWebView(request))
             {
-                // Registered from inside the game client: answer with the
-                // same token JSON as login/validate so the webview sniffs it
-                // and continues straight into the game.
-                std::string account = Base64::encode("_token=register&growId=" + grow +
-                                                     "&password=" + password);
-                {
-                    std::lock_guard<std::mutex> guard(g_issuedMutex);
-                    g_issuedTokens[account] = {grow, password};
-                }
-                sendResponse(ssl, 200, "OK", "application/json",
-                             "{\"status\":\"success\",\"message\":\"Account Validated.\",\"token\":\"" +
-                                 jsonEscape(account) + "\",\"url\":\"\",\"accountType\":\"growtopia\"}");
-                logInfo("Registered + logged in via client webview: " + grow);
+                // Registered from inside the game client. The client only
+                // intercepts responses from /player/growid/login/validate, so
+                // hand off through a pre-filled login form that submits
+                // itself immediately.
+                std::string page =
+                    pageShell("WildanDev GTPS — Account created",
+                              "<h1 class=\"grad\">Account created</h1>"
+                              "<p class=\"sub\">Logging you in…</p>"
+                              "<form id=\"autoform\" method=\"POST\" "
+                              "action=\"/player/growid/login/validate\">"
+                              "<input type=\"hidden\" name=\"_token\" value=\"register\">"
+                              "<input type=\"hidden\" name=\"growId\" value=\"" + htmlEscape(grow) +
+                              "\">"
+                              "<input type=\"hidden\" name=\"password\" value=\"" +
+                              htmlEscape(password) + "\">"
+                              "<button>Continue</button></form>"
+                              "<script>document.getElementById('autoform').submit();</script>");
+                sendResponse(ssl, 200, "OK", "text/html", page);
+                logInfo("Registered via client webview: " + grow);
             }
             else
                 sendResponse(ssl, 200, "OK", "text/html",
