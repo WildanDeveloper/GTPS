@@ -74,6 +74,12 @@ constexpr int kPacketTileChange = 3;
 constexpr int kPacketMapData = 4;
 constexpr int kFistItemId = 18;
 
+void appendInt16LE(std::vector<uint8_t>& out, int16_t value)
+{
+    out.push_back(static_cast<uint8_t>(value & 0xFF));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+}
+
 } // namespace
 
 GameServer::~GameServer()
@@ -1112,6 +1118,7 @@ void GameServer::sendMapData(ENetPeer* peer, const World& world)
 
     TankHeader header;
     header.type = kPacketMapData;
+    header.netId = -1;
     header.state = 8; // Extended flag.
     header.dataSize = static_cast<uint32_t>(body.size());
 
@@ -1131,12 +1138,19 @@ void GameServer::sendSpawn(ENetPeer* peer, const Session& subject, bool local)
     int tileX = static_cast<int>(subject.posX / 32.0f);
     int tileY = static_cast<int>(subject.posY / 32.0f);
 
+    std::string nameColor = "`w";
+    if (!subject.worldName.empty())
+    {
+        const World& subjectWorld = m_worlds.getOrCreate(subject.worldName);
+        if (subjectWorld.ownerId == static_cast<int>(subject.playerId))
+            nameColor = "`2";
+    }
     std::string text = "spawn|avatar\nnetID|" + std::to_string(subject.netId) + "\nuserID|" +
                        std::to_string(subject.playerId) + "\ncolrect|0|0|20|30\nposXY|" +
-                       std::to_string(tileX) + "|" + std::to_string(tileY) + "\nname|" + subject.growId +
-                       "``\ncountry|" + subject.country + "\ninvis|" + (subject.ghost ? "1" : "0") +
-                       "\nmstate|" + (rank >= 50 ? "1" : "0") + "\nsmstate|" + (rank >= 80 ? "1" : "0") +
-                       "\nonlineID|\n";
+                       std::to_string(tileX) + "|" + std::to_string(tileY) + "\nname|" + nameColor +
+                       subject.growId + "``\ncountry|" + subject.country + "\ninvis|" +
+                       (subject.ghost ? "1" : "0") + "\nmstate|" + (rank >= 50 ? "1" : "0") +
+                       "\nsmstate|" + (rank >= 80 ? "1" : "0") + "\nonlineID|\n";
     if (local)
         text += "type|local\n";
 
@@ -1185,19 +1199,84 @@ void GameServer::sendTileUpdate(World& world, int x, int y)
 {
     if (!world.inside(x, y))
         return;
-    std::vector<uint8_t> body;
     const Tile& tile = world.at(x, y);
-    appendInt32(body, tile.fg);
-    appendInt32(body, tile.bg);
-    for (uint8_t b : tile.state)
-        body.push_back(b);
-    appendTileExtras(world, x, y, body);
 
     TankHeader header;
-    header.type = 0x05; // PACKET_TILE_UPDATE
+    header.type = 0x05; // PACKET_SEND_TILE_UPDATE_DATA
     header.state = 8; // Extended flag.
     header.punchX = x;
     header.punchY = y;
+    header.dataSize = 8;
+
+    std::vector<uint8_t> body;
+    appendInt16LE(body, tile.fg);
+    appendInt16LE(body, tile.bg);
+    for (uint8_t b : tile.state)
+        body.push_back(b);
+
+    const ItemDef* tileItem = findItemById(tile.fg);
+    if (tileItem != nullptr)
+    {
+        if (tileItem->type == ItemType::MainDoor || tileItem->type == ItemType::Door)
+        {
+            body.push_back(0x01);
+            std::string label = tileItem->type == ItemType::MainDoor ? "EXIT" : "";
+            for (const WorldDoor& door : world.doors)
+            {
+                if (door.x == x && door.y == y)
+                {
+                    label = door.label;
+                    break;
+                }
+            }
+            appendInt16LE(body, static_cast<int16_t>(label.size()));
+            for (char c : label)
+                body.push_back(static_cast<uint8_t>(c));
+            body.push_back(0x00);
+        }
+        else if (tile.fg == 20)
+        {
+            body.push_back(0x02);
+            std::string text;
+            for (const WorldSign& sign : world.signs)
+            {
+                if (sign.x == x && sign.y == y)
+                {
+                    text = sign.text;
+                    break;
+                }
+            }
+            appendInt16LE(body, static_cast<int16_t>(text.size()));
+            for (char c : text)
+                body.push_back(static_cast<uint8_t>(c));
+            appendInt32(body, static_cast<int32_t>(0xFFFFFFFF));
+        }
+        else if (tileItem->type == ItemType::Lock)
+        {
+            body.push_back(0x03);
+            body.push_back(0x00);
+            appendInt32(body, world.ownerId);
+            appendInt32(body, 0);
+        }
+        else if (tileItem->type == ItemType::Seed)
+        {
+            body.push_back(0x04);
+            uint64_t elapsed = 0;
+            uint8_t fruit = 0;
+            for (const WorldTree& tree : world.trees)
+            {
+                if (tree.x == x && tree.y == y)
+                {
+                    uint64_t now = static_cast<uint64_t>(std::time(nullptr));
+                    elapsed = now > tree.plantedAt ? now - tree.plantedAt : 0;
+                    fruit = tree.fruit;
+                    break;
+                }
+            }
+            appendInt32(body, static_cast<int32_t>(elapsed));
+            body.push_back(fruit);
+        }
+    }
     header.dataSize = static_cast<uint32_t>(body.size());
 
     std::vector<uint8_t> data = encodeTankHeader(header);
@@ -1302,12 +1381,14 @@ void GameServer::leaveWorld(Session& session)
     World& world = m_worlds.getOrCreate(session.worldName);
     if (world.visitorCount > 0)
         --world.visitorCount;
-    sendVariant(session.peer, {VariantValue::makeString("OnRemove"), VariantValue::makeInt(session.netId)});
+    std::string removeData = "netID|" + std::to_string(session.netId) + "\npId|" +
+                             std::to_string(session.playerId) + "\n";
+    sendVariant(session.peer, {VariantValue::makeString("OnRemove"), VariantValue::makeString(removeData)});
     for (auto& [peer, other] : m_sessions)
     {
         if (peer == session.peer || other.worldName != world.name)
             continue;
-        sendVariant(peer, {VariantValue::makeString("OnRemove"), VariantValue::makeInt(session.netId)});
+        sendVariant(peer, {VariantValue::makeString("OnRemove"), VariantValue::makeString(removeData)});
     }
     session.worldName.clear();
     session.netId = 0;
@@ -1418,6 +1499,9 @@ bool GameServer::joinWorld(Session& session, const std::string& worldName)
     ++world.visitorCount;
     session.posX = static_cast<float>(world.spawnTileX * 32);
     session.posY = static_cast<float>(world.spawnTileY * 32);
+
+    sendVariant(session.peer, {VariantValue::makeString("OnEmoticonDataChanged"),
+                               VariantValue::makeUInt(201560520), VariantValue::makeString(kEmoticonData)});
 
     sendMapData(session.peer, world);
 

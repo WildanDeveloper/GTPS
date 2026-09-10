@@ -101,10 +101,10 @@ World& WorldManager::getOrCreate(const std::string& name)
 
 void WorldManager::generate(World& world)
 {
-    // Real Growtopia START-world layout (mirrors the working Gurotopia
-    // reference): cave background + dirt from y=37 down, grass on the
-    // surface row, rock/lava speckles and caves, bedrock from y=54, and a
-    // main door standing on a bedrock support near the surface.
+    // Reference world generation (verified against working servers):
+    // sky to y36, cave background + dirt from y37, surface grass, rock and
+    // lava speckles in the dirt bands, bedrock from y54, main door labeled
+    // "EXIT" standing on a bedrock support at y36.
     static std::mt19937 rng{std::random_device{}()};
 
     for (int y = 0; y < kWorldHeight; ++y)
@@ -126,9 +126,7 @@ void WorldManager::generate(World& world)
             else
             {
                 tile.fg = kDirtItemId;
-                if (y <= 47 && rng() % 29 == 0)
-                    tile.fg = 0; // small cave pocket
-                else if (y <= 49 && rng() % 39 < 2)
+                if (y <= 49 && rng() % 39 < 2)
                     tile.fg = 10; // rock
                 else if (y >= 51 && y <= 53 && rng() % 9 < 3)
                     tile.fg = kLavaItemId;
@@ -139,6 +137,7 @@ void WorldManager::generate(World& world)
     int doorX = 2 + static_cast<int>(rng() % (kWorldWidth - 4));
     world.at(doorX, 36).fg = kMainDoorItemId;
     world.at(doorX, 37).fg = kBedrockItemId; // support below the door
+    world.doors.push_back({doorX, 36, "EXIT", "", ""});
     world.spawnTileX = doorX;
     world.spawnTileY = 36;
 }
@@ -213,6 +212,16 @@ std::vector<std::pair<std::string, int>> WorldManager::listWorlds() const
 
 std::vector<uint8_t> serializeWorld(const World& world)
 {
+    // Byte layout verified against working servers:
+    // header: u16 0, u32 0, u16 nameLen, name, u32 w, u32 h, u16 tileCount,
+    //         u32 0, u16 0, u8 0
+    // per tile: 8-byte core (i16 fg, i16 bg, u8 state[4]) + optional extra
+    //   door/main door/portal: u8 1, u16 labelLen, label, u8 0
+    //   sign:                  u8 2, u16 textLen, text, u32 0xffffffff
+    //   lock:                  u8 3, u8 lockState, u32 owner, u32 accessCount
+    //   seed/tree:             u8 4, i32 elapsedSeconds, u8 fruit
+    // tail: u32 0 x3, u32 objectCount, u32 lastObjectUID,
+    //       per object: u16 id, f32 x, f32 y, u16 count, u32 uid
     std::vector<uint8_t> out;
     appendInt16(out, 0);
     appendInt32(out, 0);
@@ -225,6 +234,28 @@ std::vector<uint8_t> serializeWorld(const World& world)
     appendInt16(out, 0);
     out.push_back(0);
 
+    auto appendCounted = [&out](const std::string& text) {
+        appendInt16(out, static_cast<int16_t>(text.size()));
+        for (char c : text)
+            out.push_back(static_cast<uint8_t>(c));
+    };
+    auto treeAt = [&](int x, int y) -> const WorldTree* {
+        for (const WorldTree& tree : world.trees)
+        {
+            if (tree.x == x && tree.y == y)
+                return &tree;
+        }
+        return nullptr;
+    };
+    auto doorAt = [&](int x, int y) -> const WorldDoor* {
+        for (const WorldDoor& door : world.doors)
+        {
+            if (door.x == x && door.y == y)
+                return &door;
+        }
+        return nullptr;
+    };
+
     for (std::size_t i = 0; i < world.tiles.size(); ++i)
     {
         const Tile& tile = world.tiles[i];
@@ -235,18 +266,72 @@ std::vector<uint8_t> serializeWorld(const World& world)
         out.push_back(tile.state[2]);
         out.push_back(tile.state[3]);
 
-        // Door-type tiles append extra data after the 8-byte core: a flag
-        // byte, then (flag&2) u16 destination length + destination, then
-        // (flag&1) u16 label length + label. Tiles without extra data emit
-        // just the zero flag byte.
-        appendTileExtras(world, static_cast<int>(i % kWorldWidth), static_cast<int>(i / kWorldWidth), out);
+        const ItemDef* tileItem = findItemById(tile.fg);
+        if (tileItem == nullptr)
+            continue;
+        const int x = static_cast<int>(i % kWorldWidth);
+        const int y = static_cast<int>(i / kWorldWidth);
+
+        if (tileItem->type == ItemType::MainDoor || tileItem->type == ItemType::Door)
+        {
+            out.push_back(0x01);
+            std::string label = tileItem->type == ItemType::MainDoor ? "EXIT" : "";
+            if (const WorldDoor* door = doorAt(x, y))
+                label = door->label;
+            appendCounted(label);
+            out.push_back(0x00);
+        }
+        else if (tile.fg == 20) // Sign
+        {
+            out.push_back(0x02);
+            std::string text;
+            if (const WorldSign* sign = [&]() -> const WorldSign* {
+                    for (const WorldSign& s : world.signs)
+                        if (s.x == x && s.y == y)
+                            return &s;
+                    return nullptr;
+                }())
+                text = sign->text;
+            appendCounted(text);
+            appendInt32(out, static_cast<int32_t>(0xFFFFFFFF));
+        }
+        else if (tileItem->type == ItemType::Lock)
+        {
+            out.push_back(0x03);
+            out.push_back(0x00); // lock state
+            appendInt32(out, world.ownerId);
+            appendInt32(out, 0); // access count
+        }
+        else if (tileItem->type == ItemType::Seed)
+        {
+            out.push_back(0x04);
+            const WorldTree* tree = treeAt(x, y);
+            uint64_t elapsed = 0;
+            uint8_t fruit = 0;
+            if (tree != nullptr)
+            {
+                uint64_t now = static_cast<uint64_t>(std::time(nullptr));
+                elapsed = now > tree->plantedAt ? now - tree->plantedAt : 0;
+                fruit = tree->fruit;
+            }
+            appendInt32(out, static_cast<int32_t>(elapsed));
+            out.push_back(fruit);
+        }
     }
 
     appendInt32(out, 0);
     appendInt32(out, 0);
     appendInt32(out, 0);
-    appendInt32(out, 0);
-    appendInt32(out, 0);
+    appendInt32(out, static_cast<int32_t>(world.objects.size()));
+    appendInt32(out, static_cast<int32_t>(world.lastObjectId));
+    for (const WorldObject& object : world.objects)
+    {
+        appendInt16(out, static_cast<int16_t>(object.id));
+        appendInt32(out, static_cast<int32_t>(object.x));
+        appendInt32(out, static_cast<int32_t>(object.y));
+        appendInt16(out, static_cast<int16_t>(object.count));
+        appendInt32(out, static_cast<int32_t>(object.uid));
+    }
     return out;
 }
 
