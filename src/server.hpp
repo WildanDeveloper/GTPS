@@ -11,6 +11,7 @@
 
 #include "config.hpp"
 #include "database.hpp"
+#include "login.hpp"
 #include "protocol.hpp"
 #include "roles.hpp"
 #include "session.hpp"
@@ -26,6 +27,9 @@ struct ServerConfig
     uint16_t bindPort{17091};
     std::size_t maxPeers{64};
     std::string publicHost{"127.0.0.1"};
+    std::string loginHost{"0.0.0.0"};
+    int loginPort{8092};
+    std::string resourcesDir{"resources"};
     DbConfig db;
     std::string rolesPath{"resources/roles.conf"};
 };
@@ -126,6 +130,7 @@ private:
     ServerConfig m_config;
     RoleManager m_roles;
     Database m_database;
+    LoginService m_login;
     WorldManager m_worlds{m_database};
     std::vector<uint8_t> m_itemsDat;
     uint32_t m_itemsHash{0};

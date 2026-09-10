@@ -55,6 +55,7 @@ constexpr int kFistItemId = 18;
 
 GameServer::~GameServer()
 {
+    m_login.stop();
     if (m_host != nullptr)
     {
         enet_host_destroy(m_host);
@@ -99,6 +100,11 @@ bool GameServer::configure(const std::string& configDir)
     int maxPeers = gameConf.getInt("max_peers", 64);
     m_config.maxPeers = maxPeers > 0 && maxPeers <= 4096 ? static_cast<std::size_t>(maxPeers) : 64;
     m_config.publicHost = gameConf.get("public_host", "127.0.0.1");
+    m_config.loginHost = gameConf.get("login_host", "0.0.0.0");
+    if (auto port = parseInt(gameConf.get("login_port", "8092").c_str());
+        port.has_value() && *port > 0 && *port < 65536)
+        m_config.loginPort = *port;
+    m_config.resourcesDir = configDir;
 
     Config dbConf;
     if (!dbConf.load(configDir + "/db.conf"))
@@ -176,6 +182,10 @@ bool GameServer::start()
     enet_host_compress_with_range_coder(m_host);
 
     logInfo("Listening for game clients on port " + std::to_string(m_config.bindPort));
+
+    // In-process HTTPS login service (replaces the old Python backend).
+    m_login.start(m_config.resourcesDir, m_config.resourcesDir + "/certs/server.crt",
+                  m_config.resourcesDir + "/certs/server.key", m_config.loginHost, m_config.loginPort);
     return true;
 }
 
