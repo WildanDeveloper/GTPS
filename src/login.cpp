@@ -57,35 +57,59 @@ constexpr std::size_t kFaviconPngSize = sizeof(kFaviconPng);
 // Page design
 // ---------------------------------------------------------------------------
 
+// Design system: navy base, orange primary, blue secondary (matches the
+// SentinelX / AIGet look).
 const char* kPageCss =
+    ":root{--bg:#05070d;--bg2:#070b14;--surface:#0a101d;--line:rgba(148,163,184,.12);"
+    "--line2:rgba(148,163,184,.26);--text:#edf1f9;--muted:#94a3b8;--dim:#5c6b82;"
+    "--orange:#f97316;--orange2:#fb923c;--grad:linear-gradient(96deg,#3b82f6 0%,#60a5fa 34%,#fb923c 78%,#f97316 100%);"
+    "--shadow-lg:0 24px 70px rgba(2,6,16,.65)}\n"
     "*{box-sizing:border-box;margin:0;padding:0}\n"
-    "body{min-height:100vh;display:flex;align-items:center;justify-content:center;"
-    "font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#fff;color:#222}\n"
-    ".card{background:transparent;border:0;box-shadow:none;border-radius:0;padding:32px 28px;width:340px}\n"
-    "h1{font-size:20px;letter-spacing:.4px;margin-bottom:4px;color:#3c8a2e}\n"
-    "p.sub{font-size:12.5px;color:#7c8a7d;margin-bottom:20px}\n"
-    "label{display:block;font-size:12px;color:#556055;margin:12px 0 5px;letter-spacing:.3px}\n"
-    "input{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #d5dad5;background:#fff;"
-    "color:#222;font-size:14px;outline:none}\n"
-    "input:focus{border-color:#5aa63f;box-shadow:0 0 0 3px rgba(90,166,63,.18)}\n"
-    "button{width:100%;margin-top:20px;padding:11px;border:0;border-radius:8px;"
-    "background:linear-gradient(180deg,#5aa63f,#417c2c);color:#fff;font-size:14.5px;font-weight:600;"
-    "cursor:pointer}\n"
-    "button:hover{filter:brightness(1.08)}\n"
-    ".row{display:flex;justify-content:space-between;margin-top:16px;font-size:12.5px}\n"
-    "a{color:#3c8a2e;text-decoration:none}a:hover{text-decoration:underline}\n"
-    ".msg{background:#eef7e9;border:1px solid #cfe6c4;color:#2f5c22;border-radius:8px;"
-    "padding:10px 12px;font-size:13px;margin-bottom:14px}\n"
-    ".err{background:#f9ecec;border-color:#e6cfcf;color:#7a2f2f}\n"
-    ".code{font-size:34px;font-weight:700;letter-spacing:10px;color:#3c8a2e;text-align:center;"
-    "padding:18px 0 10px}\n"
-    ".hint{font-size:11.5px;color:#8a938a;margin-top:14px;line-height:1.5}\n";
+    "body{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:40px 18px;"
+    "background:var(--bg2);color:var(--text);font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',"
+    "Roboto,sans-serif;font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}\n"
+    "body::before{content:'';position:fixed;inset:0;"
+    "background:radial-gradient(420px 300px at 20% 0%,rgba(59,130,246,.13),transparent 60%),"
+    "radial-gradient(420px 300px at 85% 100%,rgba(249,115,22,.11),transparent 60%)}\n"
+    ".card{position:relative;width:100%;max-width:410px;background:var(--surface);"
+    "border:1px solid var(--line2);border-radius:18px;padding:30px 28px;box-shadow:var(--shadow-lg)}\n"
+    "h1{font-size:1.4rem;line-height:1.15;letter-spacing:-.02em;font-weight:750;margin-bottom:4px}\n"
+    ".grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}\n"
+    ".sub{color:var(--muted);font-size:14px;margin-bottom:8px}\n"
+    "label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;"
+    "color:var(--dim);margin:12px 0 5px}\n"
+    "label span{text-transform:none;letter-spacing:0;font-weight:500}\n"
+    "input{width:100%;background:var(--bg);border:1px solid var(--line2);border-radius:10px;"
+    "padding:11px 14px;color:var(--text);font-size:14.5px;font-family:inherit;outline:none;"
+    "transition:border-color .15s}\n"
+    "input:focus{border-color:var(--orange)}\n"
+    "button{width:100%;margin-top:18px;padding:12px;border:0;border-radius:11px;"
+    "background:linear-gradient(95deg,var(--orange2),var(--orange));color:#1a0d02;font-size:14.5px;"
+    "font-weight:700;cursor:pointer;font-family:inherit;"
+    "transition:transform .16s ease,box-shadow .16s ease,filter .16s ease}\n"
+    "button:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(249,115,22,.42);"
+    "filter:brightness(1.06)}\n"
+    ".row{display:flex;justify-content:space-between;margin-top:16px;font-size:13px}\n"
+    "a{color:var(--orange2);text-decoration:none;font-weight:600}\n"
+    "a:hover{text-decoration:underline}\n"
+    ".msg{background:rgba(59,130,246,.08);border:1px solid rgba(96,165,250,.25);color:#bcd4f8;"
+    "border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:10px}\n"
+    ".err{background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.3);color:#f8b4b4}\n"
+    ".code{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:34px;font-weight:700;"
+    "letter-spacing:10px;background:var(--grad);-webkit-background-clip:text;background-clip:text;"
+    "color:transparent;text-align:center;padding:16px 0 8px}\n"
+    ".hint{font-size:12px;color:var(--dim);margin-top:12px;line-height:1.55}\n";
 
 std::string pageShell(const std::string& title, const std::string& body)
 {
     return "<!doctype html><html><head><meta charset=\"utf-8\">"
            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-           "<title>" + title + "</title><style>" + kPageCss + "</style></head><body>"
+           "<title>" + title + "</title>"
+           "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">"
+           "<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>"
+           "<link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&"
+           "family=JetBrains+Mono:wght@500;700&display=swap\" rel=\"stylesheet\">"
+           "<style>" + kPageCss + "</style></head><body>"
            "<div class=\"card\">" + body + "</div></body></html>";
 }
 
@@ -106,7 +130,7 @@ std::string loginPage(const std::string& token, const std::string& message, bool
     std::string page = kLoginPage;
     page.replace(page.find("__TOKEN__"), 9, token);
     return pageShell("WildanDev GTPS — Login",
-                     "<h1>WildanDev GTPS</h1><p class=\"sub\">Log in with your account.</p>" + msg + page +
+                     "<h1 class=\"grad\">WildanDev GTPS</h1><p class=\"sub\">Log in with your account.</p>" + msg + page +
                          "<div class=\"row\"><a href=\"/player/forgot\">Forgot password?</a>"
                          "<a href=\"/player/register\">Create account</a></div>");
 }
@@ -117,7 +141,7 @@ std::string registerPage(const std::string& message, bool isError)
                           ? ""
                           : "<div class=\"msg " + std::string(isError ? "err" : "") + "\">" + message + "</div>";
     return pageShell("WildanDev GTPS — Register",
-                     "<h1>Create account</h1><p class=\"sub\">Pick a username and password.</p>" + msg +
+                     "<h1 class=\"grad\">Create account</h1><p class=\"sub\">Pick a username and password.</p>" + msg +
                          "<form method=\"POST\" action=\"/player/growid/register\">"
                          "<label>Username</label><input name=\"growId\" required maxlength=\"32\" "
                          "pattern=\"[A-Za-z0-9_]{1,32}\">"
@@ -137,7 +161,7 @@ std::string forgotPage(const std::string& message, bool isError)
                           ? ""
                           : "<div class=\"msg " + std::string(isError ? "err" : "") + "\">" + message + "</div>";
     return pageShell("WildanDev GTPS — Reset password",
-                     "<h1>Reset password</h1>"
+                     "<h1 class=\"grad\">Reset password</h1>"
                      "<p class=\"sub\">Enter your username. If it has an email on file, a 6-digit code is "
                      "sent to it.</p>" + msg +
                          "<form method=\"POST\" action=\"/player/growid/forgot\">"
@@ -153,7 +177,7 @@ std::string resetPage(const std::string& growId, const std::string& message, boo
                           ? ""
                           : "<div class=\"msg " + std::string(isError ? "err" : "") + "\">" + message + "</div>";
     return pageShell("WildanDev GTPS — New password",
-                     "<h1>Set a new password</h1>"
+                     "<h1 class=\"grad\">Set a new password</h1>"
                      "<p class=\"sub\">Enter the 6-digit code from your email.</p>" + msg +
                          "<form method=\"POST\" action=\"/player/growid/reset\">"
                          "<label>Username</label><input name=\"growId\" required maxlength=\"32\" value=\"" +
@@ -172,7 +196,7 @@ std::string messagePage(const std::string& title, const std::string& message, co
                         const std::string& linkText)
 {
     return pageShell("WildanDev GTPS — " + title,
-                     "<h1>" + title + "</h1><div class=\"msg\">" + message + "</div>"
+                     "<h1 class=\"grad\">" + title + "</h1><div class=\"msg\">" + message + "</div>"
                      "<div class=\"row\"><a href=\"" + link + "\">" + linkText + "</a></div>");
 }
 
