@@ -61,7 +61,7 @@ const char* kPageCss =
     "*{box-sizing:border-box;margin:0;padding:0}\n"
     "body{min-height:100vh;display:flex;align-items:center;justify-content:center;"
     "font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
-    "background:radial-gradient(1200px 600px at 20% -10%,#1d3a24 0%,#0d1712 55%,#090d0a 100%);color:#e8f0e8}\n"
+    "background:linear-gradient(180deg,#101311 0%,#0a0c0b 100%);color:#e8f0e8}\n"
     ".card{background:#121b14;border:1px solid #24382a;border-radius:14px;padding:34px 30px;width:340px;"
     "box-shadow:0 18px 50px rgba(0,0,0,.55)}\n"
     "h1{font-size:20px;letter-spacing:.4px;margin-bottom:4px;color:#b6e388}\n"
