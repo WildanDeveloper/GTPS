@@ -47,10 +47,22 @@ struct ItemDef
     std::string info;
     uint16_t spliceA{0};
     uint16_t spliceB{0};
+    uint32_t growTimeSeconds{0};
 };
 
-// The built-in WildanDev catalog (our own game data).
+// The built-in fallback catalog (used until a real items.dat is loaded).
 const std::vector<ItemDef>& builtinCatalog();
+
+// Parses an official items.dat (v26) into a full catalog. Fields mirrored
+// from the known on-disk layout: hits are raw/6, grow time and splice pairs
+// are read for seeds. Returns false on a structurally broken file.
+bool parseItemsDat(const std::vector<uint8_t>& blob, std::vector<ItemDef>& out);
+
+// Installs the active catalog used by findItemById (the server loads the
+// official items.dat at startup and passes it here).
+void setActiveCatalog(const std::vector<ItemDef>& catalog);
+// Read access to the active catalog (empty until installed).
+const std::vector<ItemDef>& activeCatalog();
 
 // Finds a catalog entry by id (nullptr when unknown).
 const ItemDef* findItemById(int id);

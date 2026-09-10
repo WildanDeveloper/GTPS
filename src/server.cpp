@@ -64,6 +64,11 @@ uint32_t peerIpv4(const ENetPeer* peer)
 }
 
 constexpr int kTankHeaderSize = 60;
+std::mt19937& sharedRng()
+{
+    static std::mt19937 rng{std::random_device{}()};
+    return rng;
+}
 constexpr int kPacketState = 0;
 constexpr int kPacketTileChange = 3;
 constexpr int kPacketMapData = 4;
@@ -150,6 +155,16 @@ bool GameServer::configure(const std::string& configDir)
         if (itemsFile.is_open())
         {
             m_itemsDat.assign(std::istreambuf_iterator<char>(itemsFile), std::istreambuf_iterator<char>());
+            std::vector<ItemDef> catalog;
+            if (parseItemsDat(m_itemsDat, catalog))
+            {
+                setActiveCatalog(catalog);
+                logInfo("Parsed items.dat: " + std::to_string(catalog.size()) + " items active");
+            }
+            else
+            {
+                logWarn("items.dat parse failed; using the builtin mini catalog");
+            }
             logInfo("Loaded items.dat (" + std::to_string(m_itemsDat.size()) + " bytes, crc32 " +
                     std::to_string(crc32IEEE(m_itemsDat)) + ")");
         }
@@ -909,7 +924,7 @@ void GameServer::sendInventoryState(Session& session)
         out.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
     };
 
-    appendI32(body, 16); // Slot capacity.
+    appendI32(body, session.slotSize < 16 ? 16 : session.slotSize); // Slot capacity.
     std::size_t shown = session.inventory.size() > 200 ? 200 : session.inventory.size();
     appendI16(body, static_cast<int16_t>(shown));
     for (std::size_t i = 0; i < shown; ++i)
@@ -940,6 +955,13 @@ void GameServer::sendInventoryState(Session& session)
     ENetPacket* packet = enet_packet_create(data.data(), data.size(), ENET_PACKET_FLAG_RELIABLE);
     if (enet_peer_send(session.peer, 0, packet) != 0)
         enet_packet_destroy(packet);
+}
+
+// Accessor for the active item catalog (splicing searches it linearly).
+const std::vector<ItemDef>& g_catalogSnapshot()
+{
+    const std::vector<ItemDef>& active = activeCatalog();
+    return active.empty() ? builtinCatalog() : active;
 }
 
 std::string GameServer::roleColor(const Session& session) const
@@ -1319,9 +1341,8 @@ void GameServer::dropObject(World& world, int itemId, int count, int tileX, int 
 {
     if (count <= 0)
         return;
-    static std::mt19937 rng{std::random_device{}()};
-    float x = static_cast<float>(tileX * 32 + static_cast<int>(rng() % 17));
-    float y = static_cast<float>(tileY * 32 + static_cast<int>(rng() % 17));
+    float x = static_cast<float>(tileX * 32 + static_cast<int>(sharedRng()() % 17));
+    float y = static_cast<float>(tileY * 32 + static_cast<int>(sharedRng()() % 17));
 
     // Merge with an identical object on the same tile (up to 200).
     for (auto& object : world.objects)
@@ -2050,23 +2071,105 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
             int rarity = target != nullptr ? target->rarity : 1;
             int blockChance = rarity > 1 ? 4 : 8;
             int seedChance = rarity > 1 ? 2 : 4;
-            static std::mt19937 dropRng{std::random_device{}()};
-            if (dropRng() % 20 == 0)
+            if (sharedRng()() % 20 == 0)
                 dropObject(world, kGemsItemId, 10, punchX, punchY);
-            else if (dropRng() % 4 == 0)
+            else if (sharedRng()() % 4 == 0)
                 dropObject(world, kGemsItemId, 5, punchX, punchY);
             else
                 dropObject(world, kGemsItemId, 1, punchX, punchY);
-            if (static_cast<int>(dropRng() % blockChance) == 0)
+            if (static_cast<int>(sharedRng()() % blockChance) == 0)
                 dropObject(world, broken, 1, punchX, punchY);
-            if (broken > 0 && static_cast<int>(dropRng() % seedChance) == 0)
+            if (broken > 0 && static_cast<int>(sharedRng()() % seedChance) == 0)
                 dropObject(world, broken + 1, 1, punchX, punchY);
             return;
         }
 
         // Placing.
-        const ItemDef* item = heldId > 0 && heldId <= 20000 ? findItemById(heldId) : nullptr;
-        if (tile.fg != 0 || item == nullptr)
+        const ItemDef* item = heldId > 0 && heldId <= 65535 ? findItemById(heldId) : nullptr;
+        if (item == nullptr)
+            return;
+
+        if (item->type == ItemType::Seed)
+        {
+            // Seed on an existing seed = splicing; otherwise plant a tree.
+            const ItemDef* existing = tile.fg != 0 ? findItemById(tile.fg) : nullptr;
+            if (existing != nullptr && existing->type == ItemType::Seed)
+            {
+                if (existing->id == heldId)
+                {
+                    sendConsoleMessage(session.peer, "It would be too dangerous to mix three seeds.");
+                    return;
+                }
+                const ItemDef* result = nullptr;
+                for (const ItemDef& candidate : g_catalogSnapshot())
+                {
+                    if ((candidate.spliceA == heldId && candidate.spliceB == tile.fg) ||
+                        (candidate.spliceB == heldId && candidate.spliceA == tile.fg))
+                    {
+                        result = &candidate;
+                        break;
+                    }
+                }
+                if (result == nullptr)
+                {
+                    sendConsoleMessage(session.peer, "Hmm, it looks like `w" + existing->name + "`` and `w" +
+                                                         item->name + "`` can't be spliced.");
+                    return;
+                }
+                if (!takeItem(session, heldId, 1))
+                    return;
+                tile.fg = static_cast<int16_t>(result->id);
+                for (WorldTree& tree : world.trees)
+                {
+                    if (tree.x == punchX && tree.y == punchY)
+                    {
+                        tree.plantedAt = std::time(nullptr);
+                        tree.fruit = static_cast<uint8_t>(1 + static_cast<int>(sharedRng()() % 3));
+                        break;
+                    }
+                }
+                world.dirty = true;
+                relayPatched(type, true);
+                std::string resultName = result->name;
+                if (resultName.size() > 5 && resultName.substr(resultName.size() - 5) == " Seed")
+                    resultName = resultName.substr(0, resultName.size() - 5);
+                sendVariant(session.peer,
+                            {VariantValue::makeString("OnTalkBubble"), VariantValue::makeInt(session.netId),
+                             VariantValue::makeString("`w" + existing->name + "`` and `w" + item->name +
+                                                      "`` have been spliced to make a `${" + resultName +
+                                                      " Tree``!"),
+                             VariantValue::makeUInt(0)});
+                return;
+            }
+            if (tile.fg != 0)
+                return;
+            if (!takeItem(session, heldId, 1))
+                return;
+            tile.fg = static_cast<int16_t>(heldId);
+            tile.state[2] = 0x11; // tree marker
+            WorldTree tree;
+            tree.x = punchX;
+            tree.y = punchY;
+            tree.plantedAt = std::time(nullptr);
+            tree.fruit = static_cast<uint8_t>(1 + static_cast<int>(sharedRng()() % 3));
+            world.trees.push_back(tree);
+            world.dirty = true;
+            relayPatched(type, true);
+            return;
+        }
+
+        if (item->type == ItemType::Background)
+        {
+            // Backgrounds overwrite the background layer.
+            if (!takeItem(session, heldId, 1))
+                return;
+            tile.bg = static_cast<int16_t>(heldId);
+            world.dirty = true;
+            relayPatched(type, true);
+            return;
+        }
+
+        if (tile.fg != 0)
             return;
         // Placing requires actually holding the item; locks are not consumed.
         if (item->type != ItemType::Lock && !takeItem(session, heldId, 1))
@@ -2079,6 +2182,35 @@ void GameServer::handleTankPacket(Session& session, const uint8_t* data, std::si
         {
             world.ownerId = static_cast<int>(session.playerId);
             sendConsoleMessage(session.peer, "World locked by you.");
+        }
+        if (item->type == ItemType::Door && heldId != 20)
+        {
+            // Registered so the edit dialog / walking target can find it.
+            bool exists = false;
+            for (const WorldDoor& door : world.doors)
+            {
+                if (door.x == punchX && door.y == punchY)
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists)
+                world.doors.push_back({punchX, punchY, "", "", ""});
+        }
+        if (heldId == 20)
+        {
+            bool exists = false;
+            for (const WorldSign& sign : world.signs)
+            {
+                if (sign.x == punchX && sign.y == punchY)
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists)
+                world.signs.push_back({punchX, punchY, ""});
         }
         world.dirty = true;
         relayPatched(type, true);

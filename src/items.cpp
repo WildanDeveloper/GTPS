@@ -1,5 +1,8 @@
 #include "items.hpp"
 
+#include <cstring>
+#include <unordered_map>
+
 namespace WildanDev
 {
 
@@ -85,14 +88,187 @@ const std::vector<ItemDef>& builtinCatalog()
     return catalog;
 }
 
+// Active catalog (official items.dat parsed at startup), falling back to the
+// builtin set until/unless it loads.
+static std::vector<ItemDef> g_activeCatalog;
+static std::unordered_map<int, const ItemDef*> g_activeIndex;
+
+const std::vector<ItemDef>& activeCatalog()
+{
+    return g_activeCatalog;
+}
+
+void setActiveCatalog(const std::vector<ItemDef>& catalog)
+{
+    g_activeCatalog = catalog;
+    g_activeIndex.clear();
+    for (const ItemDef& item : g_activeCatalog)
+        g_activeIndex[item.id] = &item;
+}
+
 const ItemDef* findItemById(int id)
 {
+    if (!g_activeIndex.empty())
+    {
+        auto it = g_activeIndex.find(id);
+        return it != g_activeIndex.end() ? it->second : nullptr;
+    }
     for (const ItemDef& item : builtinCatalog())
     {
         if (item.id == id)
             return &item;
     }
     return nullptr;
+}
+
+bool parseItemsDat(const std::vector<uint8_t>& blob, std::vector<ItemDef>& out)
+{
+    out.clear();
+    if (blob.size() < 6)
+        return false;
+    uint32_t count = 0;
+    std::memcpy(&count, blob.data() + 2, 4);
+    if (count == 0 || count > 100000)
+        return false;
+
+    // Pass 1: item boundaries. ids are sequential (0,1,2,...) stored as
+    // little-endian u32 at each item start. Candidates are validated by a
+    // plausible name length (1-128) and the next id appearing within 64 KiB.
+    std::vector<std::size_t> starts;
+    starts.reserve(count);
+    std::size_t scan = 6;
+    for (uint32_t id = 0; id < count; ++id)
+    {
+        bool found = false;
+        std::size_t limit = scan + 2097152 < blob.size() ? scan + 2097152 : blob.size();
+        std::size_t p = scan;
+        while (p + 12 <= limit)
+        {
+            // Fast-skip to the next byte matching the id's low byte.
+            const void* hit = std::memchr(blob.data() + p, id & 0xFF, limit - p);
+            if (hit == nullptr)
+                break;
+            p = static_cast<std::size_t>(static_cast<const uint8_t*>(hit) - blob.data());
+            if (blob[p + 1] != ((id >> 8) & 0xFF) || blob[p + 2] != 0 || blob[p + 3] != 0)
+            {
+                ++p;
+                continue;
+            }
+            uint16_t nameLen = static_cast<uint16_t>(blob[p + 8] | (blob[p + 9] << 8));
+            if (nameLen == 0 || nameLen > 128)
+            {
+                ++p;
+                continue;
+            }
+            if (id + 1 < count)
+            {
+                bool nextFound = false;
+                std::size_t nextLimit = p + 4 + 65536 < blob.size() ? p + 4 + 65536 : blob.size();
+                for (std::size_t q = p + 4; q + 4 <= nextLimit; ++q)
+                {
+                    if (blob[q] == ((id + 1) & 0xFF) && blob[q + 1] == (((id + 1) >> 8) & 0xFF) &&
+                        blob[q + 2] == 0 && blob[q + 3] == 0)
+                    {
+                        nextFound = true;
+                        break;
+                    }
+                }
+                if (!nextFound)
+                {
+                    ++p;
+                    continue;
+                }
+            }
+            starts.push_back(p);
+            scan = p + 4;
+            found = true;
+            break;
+        }
+        if (!found)
+            return false;
+    }
+
+    // Pass 2: per item the head layout is deterministic (verified against
+    // known landmarks): id u32, prop/cat/type/pad, name (u16 + xor), texture,
+    // hash u32, u8, ingredient u32, 4 u8s, collision u8, hits u8 (/6),
+    // reset u32, cloth u8, rarity u16, u8, audio, u32, 4 u8s, 4 strings,
+    // 16 u8s, growTime u32. The tail layout varies per revision, so splice
+    // pairs (seeds) are scanned backwards from the next item boundary.
+    out.resize(count);
+    for (uint32_t id = 0; id < count; ++id)
+    {
+        std::size_t pos = starts[id];
+        std::size_t end = id + 1 < count ? starts[id + 1] : blob.size();
+        ItemDef& item = out[id];
+        item.id = static_cast<uint16_t>(id);
+        pos += 4;
+        if (pos + 4 > end)
+            continue;
+        item.property = blob[pos];
+        item.category = blob[pos + 1];
+        item.type = static_cast<ItemType>(blob[pos + 2]);
+        pos += 4;
+        auto readString = [&](std::string& value, std::size_t maxLen) {
+            if (pos + 2 > end)
+                return false;
+            uint16_t length = static_cast<uint16_t>(blob[pos] | (blob[pos + 1] << 8));
+            pos += 2;
+            if (pos + length > end || length > maxLen)
+                return false;
+            value.assign(reinterpret_cast<const char*>(blob.data() + pos), length);
+            pos += length;
+            return true;
+        };
+        std::string name;
+        if (!readString(name, 512))
+            continue;
+        for (std::size_t c = 0; c < name.size(); ++c)
+            name[c] = static_cast<char>(name[c] ^ kNameToken[(c + item.id) % kNameTokenLength]);
+        item.name = name;
+        if (!readString(item.texture, 256))
+            continue;
+        pos += 4 + 1; // texture hash + u8
+        pos += 4 + 4; // ingredient + 4 unknown bytes
+        if (pos + 2 > end)
+            continue;
+        item.collision = static_cast<ItemCollision>(blob[pos]);
+        item.hits = blob[pos + 1] != 0 ? static_cast<uint8_t>(blob[pos + 1] / 6) : 0;
+        pos += 2 + 4 + 1 + 2 + 1; // reset, cloth, rarity, u8
+        std::string audio;
+        if (!readString(audio, 256))
+            continue;
+        pos += 4 + 4;
+        for (int k = 0; k < 4; ++k)
+        {
+            std::string s;
+            if (!readString(s, 256))
+                break;
+        }
+        if (pos + 16 + 4 > end)
+            continue;
+        pos += 16;
+        std::memcpy(&item.growTimeSeconds, blob.data() + pos, 4);
+        pos += 4;
+
+        if (item.type == ItemType::Seed)
+        {
+            // Splice pair sits near the item end; scan backwards for the last
+            // plausible (a,b) pair before the fixed postlude.
+            std::size_t scanEnd = end >= 12 ? end - 12 : pos;
+            for (std::size_t p = scanEnd; p > pos && p >= starts[id] + 4; --p)
+            {
+                uint16_t a = static_cast<uint16_t>(blob[p] | (blob[p + 1] << 8));
+                uint16_t b = static_cast<uint16_t>(blob[p + 2] | (blob[p + 3] << 8));
+                if ((a > 0 || b > 0) && a < count && b < count)
+                {
+                    item.spliceA = a;
+                    item.spliceB = b;
+                    break;
+                }
+            }
+        }
+    }
+    return true;
 }
 
 std::vector<uint8_t> encodeItemsDat(const std::vector<ItemDef>& catalog)
@@ -118,7 +294,7 @@ std::vector<uint8_t> encodeItemsDat(const std::vector<ItemDef>& catalog)
         appendI32(out, 0);
         appendU8(out, 0);
         appendI32(out, item.ingredient);
-        appendZeroes(out, 4);
+        appendZeroes(out, 1);
         appendU8(out, static_cast<uint8_t>(item.collision));
         appendU8(out, item.hits);
         appendI32(out, item.hitResetSeconds);
@@ -232,9 +408,9 @@ std::vector<std::string> decodeAllNames(const std::vector<uint8_t>& blob)
         names.push_back(decodeItemName(blob, pos, id));
 
         bool ok = skipCounted(pos); // Texture.
-        ok = ok && skip(pos, 4 + 1 + 4 + 4 + 1 + 1 + 4 + 1 + 2 + 1);
+        ok = ok && skip(pos, 4 + 1 + 4 + 1 + 1 + 1 + 4 + 1 + 2 + 1);
         ok = ok && skipCounted(pos); // Audio.
-        ok = ok && skip(pos, 4 + 4);
+        ok = ok && skip(pos, 4 + 2 + 2);
         for (int k = 0; k < 4 && ok; ++k)
             ok = skipCounted(pos);
         ok = ok && skip(pos, 16 + 4 + 2 + 2);

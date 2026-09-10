@@ -1,5 +1,6 @@
 #include "world.hpp"
 #include "database.hpp"
+#include "items.hpp"
 #include "logger.hpp"
 
 #include <algorithm>
@@ -300,7 +301,28 @@ void parseObjects(World& world, const std::vector<uint8_t>& blob, std::size_t& c
 void appendTileExtras(const World& world, int x, int y, std::vector<uint8_t>& out)
 {
     const Tile& tile = world.at(x, y);
-    bool isDoor = tile.fg == 6 || tile.fg == 12;
+
+    // Planted seed tiles carry the tree state: i32 ready-unix + u8 fruit.
+    const ItemDef* tileItem = findItemById(tile.fg);
+    if (tileItem != nullptr && tileItem->type == ItemType::Seed)
+    {
+        uint64_t ready = 0;
+        uint8_t fruit = 0;
+        for (const WorldTree& tree : world.trees)
+        {
+            if (tree.x == x && tree.y == y)
+            {
+                ready = tree.plantedAt + tileItem->growTimeSeconds;
+                fruit = tree.fruit;
+                break;
+            }
+        }
+        appendInt32(out, static_cast<int32_t>(ready));
+        out.push_back(fruit);
+        return;
+    }
+
+    bool isDoor = tile.fg == 6 || tileItem != nullptr && tileItem->type == ItemType::Door;
     bool isSign = tile.fg == 20;
     if (!isDoor && !isSign)
         return;
@@ -325,6 +347,7 @@ void appendTileExtras(const World& world, int x, int y, std::vector<uint8_t>& ou
                 }
             }
         }
+        (void)0;
         uint8_t flags = 0;
         if (!dest.empty())
             flags |= 0x02;
@@ -399,6 +422,14 @@ std::vector<uint8_t> serializeWorldExtras(const World& world)
         appendInt16(out, static_cast<int16_t>(sign.y));
         appendString(sign.text);
     }
+    appendInt32(out, static_cast<int32_t>(world.trees.size()));
+    for (const WorldTree& tree : world.trees)
+    {
+        appendInt16(out, static_cast<int16_t>(tree.x));
+        appendInt16(out, static_cast<int16_t>(tree.y));
+        appendInt32(out, static_cast<int32_t>(tree.plantedAt));
+        out.push_back(tree.fruit);
+    }
     return out;
 }
 
@@ -406,6 +437,7 @@ void parseWorldExtras(World& world, const std::vector<uint8_t>& blob, std::size_
 {
     world.doors.clear();
     world.signs.clear();
+    world.trees.clear();
     world.isPublic = false;
     std::size_t pos = offset;
     auto readU32 = [&](uint32_t& value) {
@@ -464,6 +496,23 @@ void parseWorldExtras(World& world, const std::vector<uint8_t>& blob, std::size_
         sign.x = static_cast<int>(x);
         sign.y = static_cast<int>(y);
         world.signs.push_back(sign);
+    }
+    uint32_t treeCount = 0;
+    if (!readU32(treeCount) || treeCount > 10000)
+        return;
+    for (uint32_t i = 0; i < treeCount; ++i)
+    {
+        uint32_t x = 0, y = 0, planted = 0;
+        WorldTree tree;
+        if (!readU16(x) || !readU16(y) || !readU32(planted))
+            return;
+        if (pos >= blob.size())
+            return;
+        tree.fruit = blob[pos++];
+        tree.x = static_cast<int>(x);
+        tree.y = static_cast<int>(y);
+        tree.plantedAt = planted;
+        world.trees.push_back(tree);
     }
 }
 

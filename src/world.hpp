@@ -41,6 +41,15 @@ struct WorldSign
     std::string text;
 };
 
+// A planted seed tree (tile.fg = the seed item id).
+struct WorldTree
+{
+    int x{0};
+    int y{0};
+    uint64_t plantedAt{0}; // unix seconds
+    uint8_t fruit{1};
+};
+
 // A dropped item lying in the world.
 struct WorldObject
 {
@@ -75,6 +84,7 @@ struct World
     std::vector<WorldObject> objects;
     std::vector<WorldDoor> doors;
     std::vector<WorldSign> signs;
+    std::vector<WorldTree> trees;
     uint32_t lastObjectId{0};
     std::unordered_map<int, std::pair<int, long long>> damage; // tile idx -> (hits, last hit ms)
 
