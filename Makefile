@@ -1,4 +1,4 @@
-CXX      := g+
+CXX      := g++
 STD      := -std=c++17
 WARN     := -Wall -Wextra -Wpedantic
 OPT      := -O2
